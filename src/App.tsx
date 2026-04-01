@@ -80,7 +80,7 @@ const TIME_WINDOWS = [
 
 export default function App() {
   // --- State ---
-  const [callA, setCallA] = useState(() => localStorage.getItem('wspr_callA') || 'OK1KZE');
+  const [callA, setCallA] = useState(() => localStorage.getItem('wspr_callA') || 'OK1CDJ');
   const [callB, setCallB] = useState(() => localStorage.getItem('wspr_callB') || '');
   const [band, setBand] = useState(() => localStorage.getItem('wspr_band') || '14');
   const [hours, setHours] = useState(() => Number(localStorage.getItem('wspr_hours')) || 3);
@@ -623,7 +623,12 @@ export default function App() {
               <ResponsiveContainer width="100%" height="100%">
                 <RadarChart cx="50%" cy="50%" outerRadius="80%" data={processed.polarData}>
                   <PolarGrid stroke="#262626" />
-                  <PolarAngleAxis dataKey="azimuth" stroke="#525252" fontSize={10} tickFormatter={(v) => `${v}°`} />
+                  <PolarAngleAxis 
+                    dataKey="azimuth" 
+                    stroke="#525252" 
+                    fontSize={10} 
+                    tickFormatter={(v) => (v % 10 === 0 ? `${v}°` : '')} 
+                  />
                   <PolarRadiusAxis 
                     angle={90} 
                     domain={[-40, 0]} 
