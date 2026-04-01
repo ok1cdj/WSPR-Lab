@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { WSPRSpot, ProcessedData } from './types';
+import { Analytics } from "@vercel/analytics/react";
 
 // --- Helpers ---
 function getGreatCirclePath(lat1: number, lon1: number, lat2: number, lon2: number, points = 25) {
@@ -93,6 +94,9 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [brushRange, setBrushRange] = useState<{ startIndex?: number; endIndex?: number }>({});
   const [beamwidth, setBeamwidth] = useState(() => Number(localStorage.getItem('wspr_beamwidth')) || 30);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'datetime', direction: 'desc' });
+  const [showOnlyMatches, setShowOnlyMatches] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
 
   useEffect(() => {
     setBrushRange({});
@@ -272,13 +276,19 @@ export default function App() {
 
     // 4. Identify Matching Spots
     const spotsByTimeAndReporter: Record<string, Record<string, WSPRSpot>> = {};
-    filteredSpots.forEach(s => {
+    const spotsWithMatchInfo = filteredSpots.map(s => ({
+      ...s,
+      isMatch: false,
+      matchedSNR: undefined
+    }));
+
+    spotsWithMatchInfo.forEach(s => {
       const key = `${s.datetime}_${s.reporter}`;
       if (!spotsByTimeAndReporter[key]) spotsByTimeAndReporter[key] = {};
       spotsByTimeAndReporter[key][s.transmitter] = s;
     });
 
-    filteredSpots.forEach(s => {
+    spotsWithMatchInfo.forEach(s => {
       const key = `${s.datetime}_${s.reporter}`;
       const otherCall = s.transmitter === callA ? callB : callA;
       if (otherCall && spotsByTimeAndReporter[key][otherCall]) {
@@ -287,16 +297,37 @@ export default function App() {
       }
     });
 
+    // 5. Apply Table Filter (Only Matches)
+    let tableSpots = spotsWithMatchInfo;
+    if (showOnlyMatches) {
+      tableSpots = tableSpots.filter(s => s.isMatch);
+    }
+
+    // 6. Apply Table Sorting
+    tableSpots = [...tableSpots].sort((a, b) => {
+      let valA: any = a[sortConfig.key as keyof WSPRSpot];
+      let valB: any = b[sortConfig.key as keyof WSPRSpot];
+
+      if (sortConfig.key === 'datetime') {
+        valA = new Date(valA as string).getTime();
+        valB = new Date(valB as string).getTime();
+      }
+
+      if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+
     return { 
-      spots: filteredSpots, 
+      spots: tableSpots, 
       deltaG, 
       timeSeriesData, 
       polarData, 
-      mapLines: filteredSpots,
+      mapLines: spotsWithMatchInfo,
       countA: spotsA.length,
       countB: spotsB.length
     };
-  }, [allSpots, timeSeriesData, callA, callB, brushRange, beamwidth]);
+  }, [allSpots, timeSeriesData, callA, callB, brushRange, beamwidth, showOnlyMatches, sortConfig]);
 
   // --- Fetch Data ---
   const fetchData = async () => {
@@ -431,6 +462,14 @@ export default function App() {
           >
             {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Activity className="w-4 h-4" />}
             Update Dashboard
+          </button>
+
+          <button 
+            onClick={() => setIsHelpOpen(true)}
+            className="w-full border border-white/10 hover:bg-white/5 text-zinc-400 hover:text-white text-xs font-semibold py-2 rounded-md transition-all flex items-center justify-center gap-2"
+          >
+            <Info className="w-4 h-4" />
+            How it works (Guide)
           </button>
         </div>
 
@@ -752,10 +791,37 @@ export default function App() {
 
         {/* Spots Table */}
         <div className="bg-[#151515] border border-white/5 rounded-xl overflow-hidden mb-8">
-          <div className="p-4 border-b border-white/5 flex items-center justify-between">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
-              <TableIcon className="w-4 h-4 text-orange-500" /> Recent Spots & Comparisons
-            </h3>
+          <div className="p-4 border-b border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
+                <TableIcon className="w-4 h-4 text-orange-500" /> Recent Spots & Comparisons
+              </h3>
+              
+              {callB && (
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      className="sr-only" 
+                      checked={showOnlyMatches}
+                      onChange={() => setShowOnlyMatches(!showOnlyMatches)}
+                    />
+                    <div className={cn(
+                      "w-8 h-4 rounded-full transition-colors",
+                      showOnlyMatches ? "bg-orange-600" : "bg-zinc-800"
+                    )} />
+                    <div className={cn(
+                      "absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform",
+                      showOnlyMatches ? "translate-x-4" : "translate-x-0"
+                    )} />
+                  </div>
+                  <span className="text-[10px] uppercase font-bold text-zinc-500 group-hover:text-zinc-300 transition-colors">
+                    Only Matches
+                  </span>
+                </label>
+              )}
+            </div>
+            
             <div className="flex gap-4 text-[10px] uppercase tracking-wider font-semibold">
               <span className="flex items-center gap-1 text-orange-500">
                 <div className="w-2 h-2 rounded-full bg-orange-500" /> {callA}
@@ -771,11 +837,32 @@ export default function App() {
             <table className="w-full text-left text-[10px] md:text-xs border-collapse">
               <thead className="sticky top-0 bg-[#151515] z-10">
                 <tr className="text-zinc-500 border-b border-white/5">
-                  <th className="p-2 md:p-4 font-bold uppercase tracking-widest">Time</th>
+                  <th 
+                    className="p-2 md:p-4 font-bold uppercase tracking-widest cursor-pointer hover:text-white transition-colors"
+                    onClick={() => setSortConfig({ key: 'datetime', direction: sortConfig.key === 'datetime' && sortConfig.direction === 'desc' ? 'asc' : 'desc' })}
+                  >
+                    <div className="flex items-center gap-1">
+                      Time {sortConfig.key === 'datetime' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </div>
+                  </th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest">TX</th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest">Reporter</th>
-                  <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Dist</th>
-                  <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">SNR</th>
+                  <th 
+                    className="p-2 md:p-4 font-bold uppercase tracking-widest text-right cursor-pointer hover:text-white transition-colors"
+                    onClick={() => setSortConfig({ key: 'distance', direction: sortConfig.key === 'distance' && sortConfig.direction === 'desc' ? 'asc' : 'desc' })}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      Dist {sortConfig.key === 'distance' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </div>
+                  </th>
+                  <th 
+                    className="p-2 md:p-4 font-bold uppercase tracking-widest text-right cursor-pointer hover:text-white transition-colors"
+                    onClick={() => setSortConfig({ key: 'snr', direction: sortConfig.key === 'snr' && sortConfig.direction === 'desc' ? 'asc' : 'desc' })}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      SNR {sortConfig.key === 'snr' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </div>
+                  </th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Pwr</th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Norm</th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-center">Match</th>
@@ -824,6 +911,96 @@ export default function App() {
         </div>
       </div>
     </main>
+
+    {/* Help Modal */}
+    {isHelpOpen && (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div 
+          className="absolute inset-0 bg-black/80 backdrop-blur-sm" 
+          onClick={() => setIsHelpOpen(false)}
+        />
+        <div className="relative bg-[#151515] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col shadow-2xl">
+          <div className="p-6 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Info className="w-5 h-5 text-orange-500" />
+              <h2 className="text-xl font-bold text-white">WSPR Antenna Lab Guide</h2>
+            </div>
+            <button 
+              onClick={() => setIsHelpOpen(false)}
+              className="p-2 text-zinc-500 hover:text-white transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+          
+          <div className="p-8 overflow-y-auto custom-scrollbar space-y-8 text-sm leading-relaxed text-zinc-400">
+            <section className="space-y-3">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Overview</h3>
+              <p>
+                WSPR Antenna Lab is a specialized tool designed for radio amateurs to compare the real-world performance of two antennas. 
+                By leveraging global WSPR (Weak Signal Propagation Reporter) data, it provides objective metrics on antenna gain and radiation patterns.
+              </p>
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">How to use</h3>
+              <div className="space-y-4">
+                <div className="flex gap-4">
+                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">1</div>
+                  <p><strong className="text-zinc-200">Set Primary Station:</strong> Enter your callsign in "Callsign A". This is the antenna you are testing.</p>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">2</div>
+                  <p><strong className="text-zinc-200">Select Reference:</strong> Choose a nearby station as "Callsign B". Ideally, this station should be within 50km and use a known antenna (like a dipole) for comparison.</p>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">3</div>
+                  <p><strong className="text-zinc-200">Analyze:</strong> Select your band and time window, then click Update. The dashboard will calculate the relative gain difference.</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Key Concepts</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">SNR Normalization</h4>
+                  <p className="text-xs">
+                    Different stations use different power levels. We normalize data by subtracting the reported power (dBm) from the SNR. 
+                    <code className="block mt-2 text-orange-500">SNR_norm = SNR - Power</code>
+                  </p>
+                </div>
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Antenna Delta ($\Delta G$)</h4>
+                  <p className="text-xs">
+                    This represents the average gain difference between your antenna and the reference. A +3dB delta means your antenna is performing twice as well as the reference.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Visualizations</h3>
+              <ul className="list-disc list-inside space-y-2 marker:text-orange-500">
+                <li><strong className="text-zinc-200">Radiation Pattern:</strong> A smoothed polar chart showing gain at different azimuths. Use "Beamwidth" to adjust the smoothing sensitivity.</li>
+                <li><strong className="text-zinc-200">Propagation Map:</strong> Real-time visualization of where your signal is reaching.</li>
+                <li><strong className="text-zinc-200">Matches:</strong> A "Match" occurs when both A and B are heard by the same reporter in the same 2-minute WSPR slot. These are the most accurate data points for comparison.</li>
+              </ul>
+            </section>
+          </div>
+
+          <div className="p-6 border-t border-white/5 bg-zinc-900/30">
+            <button 
+              onClick={() => setIsHelpOpen(false)}
+              className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-bold py-3 rounded-xl transition-all"
+            >
+              Got it, thanks!
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    <Analytics />
     </div>
   );
 }
