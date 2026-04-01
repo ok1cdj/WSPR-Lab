@@ -14,7 +14,7 @@ import {
   Settings, Activity, Map as MapIcon, Radio, 
   ChevronRight, RefreshCw, AlertCircle, Info,
   Compass, Table as TableIcon, CheckCircle2,
-  Menu, X
+  Menu, X, Mail, Coffee
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { WSPRSpot, ProcessedData } from './types';
@@ -986,6 +986,31 @@ export default function App() {
                 <li><strong className="text-zinc-200">Propagation Map:</strong> Real-time visualization of where your signal is reaching.</li>
                 <li><strong className="text-zinc-200">Matches:</strong> A "Match" occurs when both A and B are heard by the same reporter in the same 2-minute WSPR slot. These are the most accurate data points for comparison.</li>
               </ul>
+            </section>
+
+            <section className="space-y-4 pt-4 border-t border-white/5">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Feedback & Support</h3>
+              <p>
+                Feedback is welcome! If you have any questions or suggestions, feel free to reach out.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-4">
+                <a 
+                  href="mailto:ondra@ok1cdj.com" 
+                  className="flex items-center gap-2 text-zinc-200 hover:text-orange-500 transition-colors"
+                >
+                  <Mail className="w-4 h-4" />
+                  ondra@ok1cdj.com
+                </a>
+                <a 
+                  href="https://buymeacoffee.com/ok1cdj" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-zinc-200 hover:text-orange-500 transition-colors"
+                >
+                  <Coffee className="w-4 h-4" />
+                  Buy Me a Coffee
+                </a>
+              </div>
             </section>
           </div>
 
