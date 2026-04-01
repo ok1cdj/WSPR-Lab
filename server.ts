@@ -6,15 +6,12 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+app.use(express.json());
 
-  app.use(express.json());
-
-  // API Route for WSPR query
-  app.post("/api/wspr", async (req, res) => {
-    const { call1, call2, band, hours } = req.body;
+// API Route for WSPR query
+app.post("/api/wspr", async (req, res) => {
+  const { call1, call2, band, hours } = req.body;
 
     // Construct SQL query for wspr.live
     const transmitters = [call1, call2].filter(Boolean).map(c => `'${c}'`).join(',');
@@ -62,9 +59,9 @@ async function startServer() {
     }
   });
 
-  // API Route to find nearby stations
-  app.post("/api/nearby", async (req, res) => {
-    const { callA, band } = req.body;
+// API Route to find nearby stations
+app.post("/api/nearby", async (req, res) => {
+  const { callA, band } = req.body;
     const bandNum = parseInt(band);
 
     if (!callA || isNaN(bandNum)) {
@@ -150,14 +147,23 @@ async function startServer() {
     }
   });
 
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", env: process.env.NODE_ENV, vercel: !!process.env.VERCEL });
+});
+
+async function startServer() {
+  const PORT = 3000;
+
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
+    // Persistent server (Cloud Run) serving static files
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -165,9 +171,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
