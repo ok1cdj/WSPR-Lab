@@ -92,6 +92,7 @@ export default function App() {
   const [nearbyError, setNearbyError] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [brushRange, setBrushRange] = useState<{ startIndex?: number; endIndex?: number }>({});
+  const [beamwidth, setBeamwidth] = useState(() => Number(localStorage.getItem('wspr_beamwidth')) || 30);
 
   useEffect(() => {
     setBrushRange({});
@@ -103,7 +104,8 @@ export default function App() {
     localStorage.setItem('wspr_callB', callB);
     localStorage.setItem('wspr_band', band);
     localStorage.setItem('wspr_hours', hours.toString());
-  }, [callA, callB, band, hours]);
+    localStorage.setItem('wspr_beamwidth', beamwidth.toString());
+  }, [callA, callB, band, hours, beamwidth]);
 
   // --- Fetch Nearby Stations ---
   const fetchNearby = async () => {
@@ -201,7 +203,7 @@ export default function App() {
     
     const deltaG = (avgA !== null && avgB !== null) ? avgA - avgB : null;
 
-    // 3. Polar Data (Normalized to 0 dB relative max)
+    // 3. Polar Data (Normalized to 0 dB relative max with Gaussian Smoothing)
     const azimuthBins: Record<number, { azimuth: number, snrA: number[], snrB: number[] }> = {};
     for (let i = 0; i < 360; i += 10) azimuthBins[i] = { azimuth: i, snrA: [], snrB: [] };
 
@@ -217,17 +219,56 @@ export default function App() {
       azimuth: b.azimuth,
       avgA: b.snrA.length > 0 ? b.snrA.reduce((a, b) => a + b, 0) / b.snrA.length : null,
       avgB: b.snrB.length > 0 ? b.snrB.reduce((a, b) => a + b, 0) / b.snrB.length : null,
+      countA: b.snrA.length,
+      countB: b.snrB.length
     }));
 
-    // Find global max for normalization
+    // Find global max for normalization (Outlier Protection: average of top 5%)
     const allVals = rawAverages.flatMap(d => [d.avgA, d.avgB]).filter((v): v is number => v !== null);
-    const globalMax = allVals.length > 0 ? Math.max(...allVals) : 0;
+    let globalMax = 0;
+    if (allVals.length > 0) {
+      const sorted = [...allVals].sort((a, b) => b - a);
+      const topCount = Math.max(1, Math.ceil(sorted.length * 0.05));
+      const topVals = sorted.slice(0, topCount);
+      globalMax = topVals.reduce((a, b) => a + b, 0) / topCount;
+    }
 
-    const polarData = rawAverages.map(b => ({
-      azimuth: b.azimuth,
-      [callA]: b.avgA !== null ? Math.max(-40, Number((b.avgA - globalMax).toFixed(1))) : -40,
-      [callB]: b.avgB !== null ? Math.max(-40, Number((b.avgB - globalMax).toFixed(1))) : -40,
-    }));
+    // Gaussian Smoothing Function
+    const sigma = beamwidth / 2.355;
+    const smooth = (targetAz: number, data: { azimuth: number, val: number | null }[]) => {
+      // Noise Floor Anchor: Start with a small constant weight at -40dB.
+      // This ensures that if data is far away (Gaussian weight < 0.01), 
+      // the value pulls back to the center (-40dB) instead of staying flat.
+      let numerator = 0.01 * (-40); 
+      let denominator = 0.01;
+      
+      const validPoints = data.filter(p => p.val !== null);
+      if (validPoints.length === 0) return -40;
+
+      validPoints.forEach(p => {
+        let diff = Math.abs(targetAz - p.azimuth);
+        if (diff > 180) diff = 360 - diff;
+        const weight = Math.exp(-(diff * diff) / (2 * sigma * sigma));
+        numerator += (p.val! - globalMax) * weight;
+        denominator += weight;
+      });
+
+      const result = denominator > 0 ? numerator / denominator : -40;
+      return Math.min(2, Math.max(-40, Number(result.toFixed(1))));
+    };
+
+    const polarData = [];
+    for (let i = 0; i < 360; i += 5) {
+      const rawBin = rawAverages.find(r => Math.abs(r.azimuth - i) < 2.5);
+      polarData.push({
+        azimuth: i,
+        [callA]: smooth(i, rawAverages.map(r => ({ azimuth: r.azimuth, val: r.avgA }))),
+        [callB]: smooth(i, rawAverages.map(r => ({ azimuth: r.azimuth, val: r.avgB }))),
+        // Markers for significant data points (at the edge)
+        markerA: rawBin && rawBin.countA > 3 ? 0.5 : null,
+        markerB: rawBin && rawBin.countB > 3 ? 0.5 : null,
+      });
+    }
 
     // 4. Identify Matching Spots
     const spotsByTimeAndReporter: Record<string, Record<string, WSPRSpot>> = {};
@@ -255,7 +296,7 @@ export default function App() {
       countA: spotsA.length,
       countB: spotsB.length
     };
-  }, [allSpots, timeSeriesData, callA, callB, brushRange]);
+  }, [allSpots, timeSeriesData, callA, callB, brushRange, beamwidth]);
 
   // --- Fetch Data ---
   const fetchData = async () => {
@@ -556,11 +597,27 @@ export default function App() {
           </div>
 
           {/* Polar Radiation Pattern */}
-          <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[350px] md:h-[400px]">
-            <div className="flex items-center justify-between mb-4 md:mb-6">
+          <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[400px] md:h-[450px]">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 md:mb-6">
               <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
                 <Compass className="w-4 h-4 text-orange-500" /> Radiation Pattern
               </h3>
+              
+              <div className="flex items-center gap-4 bg-zinc-900/50 p-2 rounded-lg border border-white/5">
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-zinc-500 uppercase font-bold leading-none mb-1">Beamwidth</span>
+                  <span className="text-xs font-mono text-orange-500 leading-none">{beamwidth}°</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="10" 
+                  max="90" 
+                  step="5"
+                  value={beamwidth}
+                  onChange={(e) => setBeamwidth(Number(e.target.value))}
+                  className="w-24 md:w-32 accent-orange-600 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
             </div>
             <div className="flex-1 min-h-0">
               <ResponsiveContainer width="100%" height="100%">
@@ -584,7 +641,8 @@ export default function App() {
                     dataKey={callA}
                     stroke="#f97316"
                     fill="#f97316"
-                    fillOpacity={0.3}
+                    fillOpacity={0.4}
+                    dot={false}
                   />
                   {callB && (
                     <Radar
@@ -592,12 +650,29 @@ export default function App() {
                       dataKey={callB}
                       stroke="#06b6d4"
                       fill="#06b6d4"
-                      fillOpacity={0.3}
+                      fillOpacity={0.4}
+                      dot={false}
                     />
                   )}
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#151515', border: '1px solid #262626', borderRadius: '8px', fontSize: '12px' }}
+                  {/* Data Density Markers */}
+                  <Radar
+                    name="Data Source A"
+                    dataKey="markerA"
+                    stroke="none"
+                    fill="none"
+                    dot={{ r: 2, fill: '#f97316', stroke: '#000', strokeWidth: 1 }}
+                    legendType="none"
                   />
+                  {callB && (
+                    <Radar
+                      name="Data Source B"
+                      dataKey="markerB"
+                      stroke="none"
+                      fill="none"
+                      dot={{ r: 2, fill: '#06b6d4', stroke: '#000', strokeWidth: 1 }}
+                      legendType="none"
+                    />
+                  )}
                   <Legend wrapperStyle={{ fontSize: '10px' }} />
                 </RadarChart>
               </ResponsiveContainer>
