@@ -1,0 +1,34 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@theme {
+  --color-bg: #0a0a0a;
+  --color-card: #151515;
+  --color-border: #262626;
+  --color-accent: #f97316;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: #e5e5e5;
+  font-family: 'Inter', sans-serif;
+}
+
+.leaflet-container {
+  background: #111 !important;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+::-webkit-scrollbar-thumb {
+  background: #262626;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #333;
+}

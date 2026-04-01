@@ -1,0 +1,5 @@
+{
+  "name": "WSPR Antenna Lab",
+  "description": "Scientific antenna performance comparison using WSPR data normalization and visualization.",
+  "requestFramePermissions": []
+}
