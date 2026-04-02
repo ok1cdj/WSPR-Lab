@@ -114,7 +114,7 @@ export default function App() {
   // --- Fetch Nearby Stations ---
   const fetchNearby = async () => {
     if (!callA || callA.length < 3) {
-      setNearbyStations([]);
+      setNearbyStations([]);delta
       return;
     }
     setLoadingNearby(true);
@@ -486,7 +486,7 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
         {/* Mobile Header */}
-        <header className="sticky top-0 z-30 bg-[#0a0a0a]/80 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between md:hidden">
+        <header className="sticky top-0 z-[1000] bg-[#0a0a0a]/80 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between md:hidden">
           <div className="flex items-center gap-2">
             <Radio className="w-5 h-5 text-orange-500" />
             <h1 className="text-lg font-bold text-white">WSPR Lab</h1>
@@ -503,7 +503,7 @@ export default function App() {
         {!isSidebarOpen && (
           <button 
             onClick={() => setIsSidebarOpen(true)}
-            className="hidden md:flex fixed top-6 left-6 z-40 p-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl shadow-xl shadow-orange-900/20 transition-all hover:scale-105"
+            className="hidden md:flex fixed top-6 left-6 z-[2000] p-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl shadow-xl shadow-orange-900/20 transition-all hover:scale-105"
             title="Open Configuration"
           >
             <Settings className="w-5 h-5" />
@@ -524,7 +524,7 @@ export default function App() {
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <Activity className="w-12 h-12" />
               </div>
-              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Antenna Delta ($\Delta G$)</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Antenna &Delta;G</p>
               <div className="flex items-baseline gap-2">
                 <h2 className={cn(
                   "text-4xl md:text-5xl font-black tracking-tighter",
@@ -914,7 +914,7 @@ export default function App() {
 
     {/* Help Modal */}
     {isHelpOpen && (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
         <div 
           className="absolute inset-0 bg-black/80 backdrop-blur-sm" 
           onClick={() => setIsHelpOpen(false)}
