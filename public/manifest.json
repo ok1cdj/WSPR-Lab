@@ -1,0 +1,22 @@
+{
+  "name": "WSPR Antenna Lab",
+  "short_name": "WSPR Lab",
+  "description": "Scientific antenna performance comparison using WSPR data normalization and visualization.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#f97316",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/lucide-react/lucide/main/icons/radio.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
