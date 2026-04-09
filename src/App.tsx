@@ -114,7 +114,7 @@ export default function App() {
   // --- Fetch Nearby Stations ---
   const fetchNearby = async () => {
     if (!callA || callA.length < 3) {
-      setNearbyStations([]);delta
+      setNearbyStations([]);
       return;
     }
     setLoadingNearby(true);
