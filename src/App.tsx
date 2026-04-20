@@ -6,7 +6,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
-  Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Brush
+  Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Brush,
+  ScatterChart, Scatter, ZAxis, ReferenceLine, ComposedChart
 } from 'recharts';
 import { MapContainer, TileLayer, Polyline, CircleMarker, Popup } from 'react-leaflet';
 import { format, parseISO, startOfMinute } from 'date-fns';
@@ -58,6 +59,8 @@ function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
 }
 
 // --- Constants ---
+const APP_VERSION = 'v1.3.0';
+
 const BANDS = [
   { label: '160m', value: '1' },
   { label: '80m', value: '3' },
@@ -96,6 +99,8 @@ export default function App() {
   const [beamwidth, setBeamwidth] = useState(() => Number(localStorage.getItem('wspr_beamwidth')) || 30);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'datetime', direction: 'desc' });
   const [showOnlyMatches, setShowOnlyMatches] = useState(false);
+  const [localThreshold, setLocalThreshold] = useState(() => Number(localStorage.getItem('wspr_local_threshold')) || 1500);
+  const [dxThreshold, setDxThreshold] = useState(() => Number(localStorage.getItem('wspr_dx_threshold')) || 4000);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
   useEffect(() => {
@@ -109,7 +114,9 @@ export default function App() {
     localStorage.setItem('wspr_band', band);
     localStorage.setItem('wspr_hours', hours.toString());
     localStorage.setItem('wspr_beamwidth', beamwidth.toString());
-  }, [callA, callB, band, hours, beamwidth]);
+    localStorage.setItem('wspr_local_threshold', localThreshold.toString());
+    localStorage.setItem('wspr_dx_threshold', dxThreshold.toString());
+  }, [callA, callB, band, hours, beamwidth, localThreshold, dxThreshold]);
 
   // --- Fetch Nearby Stations ---
   const fetchNearby = async () => {
@@ -150,19 +157,53 @@ export default function App() {
   }, [callA, band]);
 
   // --- Data Processing ---
-  const allSpots = useMemo((): WSPRSpot[] => {
+  // --- Data Processing ---
+
+  // 1. All spots with normalization, distance, and match info
+  const allProcessedSpots = useMemo((): WSPRSpot[] => {
     if (!rawData || rawData.length === 0) return [];
-    return rawData.map(d => ({
+    
+    const base = rawData.map(d => ({
       ...d,
       snr_norm: d.snr - d.power,
       distance: getDistance(d.tx_lat, d.tx_lon, d.rx_lat, d.rx_lon)
     }));
-  }, [rawData]);
 
+    const spotsByTimeAndReporter: Record<string, Record<string, WSPRSpot>> = {};
+    const result: WSPRSpot[] = base.map(s => ({
+      ...s,
+      isMatch: false,
+      matchedSNR: undefined
+    }));
+
+    result.forEach(s => {
+      const key = `${s.datetime}_${s.reporter}`;
+      if (!spotsByTimeAndReporter[key]) spotsByTimeAndReporter[key] = {};
+      spotsByTimeAndReporter[key][s.transmitter] = s;
+    });
+
+    result.forEach(s => {
+      const key = `${s.datetime}_${s.reporter}`;
+      const otherCall = s.transmitter === callA ? callB : callA;
+      if (otherCall && spotsByTimeAndReporter[key][otherCall]) {
+        s.isMatch = true;
+        s.matchedSNR = spotsByTimeAndReporter[key][otherCall].snr;
+      }
+    });
+
+    return result;
+  }, [rawData, callA, callB]);
+
+  // 2. Base data for visualizations (respecting showOnlyMatches)
+  const baseData = useMemo(() => {
+    return showOnlyMatches ? allProcessedSpots.filter(s => s.isMatch) : allProcessedSpots;
+  }, [allProcessedSpots, showOnlyMatches]);
+
+  // 3. Time Series Data (source for Brush AND used in chart)
   const timeSeriesData = useMemo(() => {
-    if (allSpots.length === 0) return [];
+    if (baseData.length === 0) return [];
     const timeGroups: Record<string, { time: string, snrA: number[], snrB: number[] }> = {};
-    allSpots.forEach(s => {
+    baseData.forEach(s => {
       const date = parseISO(s.datetime);
       const slot = format(new Date(Math.floor(date.getTime() / (10 * 60 * 1000)) * (10 * 60 * 1000)), 'HH:mm');
       if (!timeGroups[slot]) timeGroups[slot] = { time: slot, snrA: [], snrB: [] };
@@ -177,37 +218,49 @@ export default function App() {
         [callB]: g.snrB.length > 0 ? Number((g.snrB.reduce((a, b) => a + b, 0) / g.snrB.length).toFixed(1)) : null,
       }))
       .sort((a, b) => a.time.localeCompare(b.time));
-  }, [allSpots, callA, callB]);
+  }, [baseData, callA, callB]);
 
+  // 4. Final aggregation with Brush and Sort
   const processed = useMemo((): ProcessedData => {
-    if (allSpots.length === 0) {
-      return { spots: [], deltaG: null, timeSeriesData: [], polarData: [], mapLines: [], countA: 0, countB: 0 };
+    if (baseData.length === 0) {
+      return { 
+        spots: [], 
+        deltaG: null, 
+        timeSeriesData: [], 
+        polarData: [], 
+        mapLines: [], 
+        countA: 0, 
+        countB: 0,
+        scatterData: [],
+        regressionA: null,
+        regressionB: null,
+        propagationNote: null,
+        warnings: { lowDataDx: false, lowDataLocal: false }
+      };
     }
 
-    // 1. Filter spots based on Brush selection
-    let filteredSpots = allSpots;
+    // Filter by Brush
+    let filteredSpots = baseData;
     if (brushRange.startIndex !== undefined && brushRange.endIndex !== undefined && timeSeriesData.length > 0) {
       const startTime = timeSeriesData[brushRange.startIndex]?.time;
       const endTime = timeSeriesData[brushRange.endIndex]?.time;
       
       if (startTime && endTime) {
-        filteredSpots = allSpots.filter(s => {
+        filteredSpots = baseData.filter(s => {
           const t = format(parseISO(s.datetime), 'HH:mm');
           return t >= startTime && t <= endTime;
         });
       }
     }
 
-    // 2. Calculate Stats based on filtered spots
+    // Stats
     const spotsA = filteredSpots.filter(s => s.transmitter === callA);
     const spotsB = callB ? filteredSpots.filter(s => s.transmitter === callB) : [];
-
     const avgA = spotsA.length > 0 ? spotsA.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsA.length : null;
     const avgB = spotsB.length > 0 ? spotsB.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsB.length : null;
-    
     const deltaG = (avgA !== null && avgB !== null) ? avgA - avgB : null;
 
-    // 3. Polar Data (Normalized to 0 dB relative max with Gaussian Smoothing)
+    // Polar Data
     const azimuthBins: Record<number, { azimuth: number, snrA: number[], snrB: number[] }> = {};
     for (let i = 0; i < 360; i += 10) azimuthBins[i] = { azimuth: i, snrA: [], snrB: [] };
 
@@ -227,7 +280,6 @@ export default function App() {
       countB: b.snrB.length
     }));
 
-    // Find global max for normalization (Outlier Protection: average of top 5%)
     const allVals = rawAverages.flatMap(d => [d.avgA, d.avgB]).filter((v): v is number => v !== null);
     let globalMax = 0;
     if (allVals.length > 0) {
@@ -237,18 +289,12 @@ export default function App() {
       globalMax = topVals.reduce((a, b) => a + b, 0) / topCount;
     }
 
-    // Gaussian Smoothing Function
     const sigma = beamwidth / 2.355;
     const smooth = (targetAz: number, data: { azimuth: number, val: number | null }[]) => {
-      // Noise Floor Anchor: Start with a small constant weight at -40dB.
-      // This ensures that if data is far away (Gaussian weight < 0.01), 
-      // the value pulls back to the center (-40dB) instead of staying flat.
       let numerator = 0.01 * (-40); 
       let denominator = 0.01;
-      
       const validPoints = data.filter(p => p.val !== null);
       if (validPoints.length === 0) return -40;
-
       validPoints.forEach(p => {
         let diff = Math.abs(targetAz - p.azimuth);
         if (diff > 180) diff = 360 - diff;
@@ -256,7 +302,6 @@ export default function App() {
         numerator += (p.val! - globalMax) * weight;
         denominator += weight;
       });
-
       const result = denominator > 0 ? numerator / denominator : -40;
       return Math.min(2, Math.max(-40, Number(result.toFixed(1))));
     };
@@ -268,43 +313,13 @@ export default function App() {
         azimuth: i,
         [callA]: smooth(i, rawAverages.map(r => ({ azimuth: r.azimuth, val: r.avgA }))),
         [callB]: smooth(i, rawAverages.map(r => ({ azimuth: r.azimuth, val: r.avgB }))),
-        // Markers for significant data points (at the edge)
         markerA: rawBin && rawBin.countA > 3 ? 0.5 : null,
         markerB: rawBin && rawBin.countB > 3 ? 0.5 : null,
       });
     }
 
-    // 4. Identify Matching Spots
-    const spotsByTimeAndReporter: Record<string, Record<string, WSPRSpot>> = {};
-    const spotsWithMatchInfo = filteredSpots.map(s => ({
-      ...s,
-      isMatch: false,
-      matchedSNR: undefined
-    }));
-
-    spotsWithMatchInfo.forEach(s => {
-      const key = `${s.datetime}_${s.reporter}`;
-      if (!spotsByTimeAndReporter[key]) spotsByTimeAndReporter[key] = {};
-      spotsByTimeAndReporter[key][s.transmitter] = s;
-    });
-
-    spotsWithMatchInfo.forEach(s => {
-      const key = `${s.datetime}_${s.reporter}`;
-      const otherCall = s.transmitter === callA ? callB : callA;
-      if (otherCall && spotsByTimeAndReporter[key][otherCall]) {
-        s.isMatch = true;
-        s.matchedSNR = spotsByTimeAndReporter[key][otherCall].snr;
-      }
-    });
-
-    // 5. Apply Table Filter (Only Matches)
-    let tableSpots = spotsWithMatchInfo;
-    if (showOnlyMatches) {
-      tableSpots = tableSpots.filter(s => s.isMatch);
-    }
-
-    // 6. Apply Table Sorting
-    tableSpots = [...tableSpots].sort((a, b) => {
+    // Table Sorting
+    const tableSpots = [...filteredSpots].sort((a, b) => {
       let valA: any = a[sortConfig.key as keyof WSPRSpot];
       let valB: any = b[sortConfig.key as keyof WSPRSpot];
 
@@ -318,16 +333,82 @@ export default function App() {
       return 0;
     });
 
+    // 5. Distance-SNR Correlation & Regression
+    const calculateRegression = (data: { x: number; y: number }[]) => {
+      const n = data.length;
+      if (n < 2) return null;
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+      data.forEach(p => {
+        sumX += p.x;
+        sumY += p.y;
+        sumXY += p.x * p.y;
+        sumX2 += p.x * p.x;
+      });
+      const denom = (n * sumX2 - sumX * sumX);
+      if (Math.abs(denom) < 0.0001) return null;
+      const m = (n * sumXY - sumX * sumY) / denom;
+      const b = (sumY - m * sumX) / n;
+      return { m, b };
+    };
+
+    const scatterDataA = spotsA.map(s => ({ distance: s.distance || 0, snr: s.snr_norm || 0 }));
+    const scatterDataB = spotsB.map(s => ({ distance: s.distance || 0, snr: s.snr_norm || 0 }));
+    const regressionA = calculateRegression(scatterDataA.map(d => ({ x: d.distance, y: d.snr })));
+    const regressionB = calculateRegression(scatterDataB.map(d => ({ x: d.distance, y: d.snr })));
+
+    let propagationNote: string | null = null;
+    const warnings = { lowDataDx: false, lowDataLocal: false };
+
+    if (callB && spotsA.length > 0 && spotsB.length > 0) {
+      const dxA = spotsA.filter(s => (s.distance || 0) > dxThreshold);
+      const dxB = spotsB.filter(s => (s.distance || 0) > dxThreshold);
+      const localA = spotsA.filter(s => (s.distance || 0) < localThreshold);
+      const localB = spotsB.filter(s => (s.distance || 0) < localThreshold);
+
+      if (dxA.length < 5 || dxB.length < 5) warnings.lowDataDx = true;
+      if (localA.length < 5 || localB.length < 5) warnings.lowDataLocal = true;
+
+      const avgDxA = dxA.length > 0 ? dxA.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / dxA.length : -50;
+      const avgDxB = dxB.length > 0 ? dxB.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / dxB.length : -50;
+      const avgLocalA = localA.length > 0 ? localA.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / localA.length : -50;
+      const avgLocalB = localB.length > 0 ? localB.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / localB.length : -50;
+
+      // Antenna favors DX if it loses less signal over distance
+      const dropA = avgLocalA - avgDxA;
+      const dropB = avgLocalB - avgDxB;
+
+      if (regressionA && regressionB) {
+        // Convert slope (dB/km) to dB/1000km for readability (positive value for loss)
+        const lossA = Math.abs(regressionA.m * 1000).toFixed(1);
+        const lossB = Math.abs(regressionB.m * 1000).toFixed(1);
+
+        if (regressionA.m > regressionB.m || dropA < dropB) {
+          propagationNote = `[${lossA} vs ${lossB} dB/1000km] Antenna ${callA} favors DX (Low-angle)`;
+        } else {
+          propagationNote = `[${lossB} vs ${lossA} dB/1000km] Antenna ${callB} favors DX (Low-angle)`;
+        }
+      }
+    }
+
     return { 
       spots: tableSpots, 
       deltaG, 
       timeSeriesData, 
       polarData, 
-      mapLines: spotsWithMatchInfo,
+      mapLines: filteredSpots,
       countA: spotsA.length,
-      countB: spotsB.length
+      countB: spotsB.length,
+      scatterData: filteredSpots.map(s => ({
+        distance: s.distance || 0,
+        snrA: s.transmitter === callA ? s.snr_norm || 0 : null,
+        snrB: s.transmitter === callB ? s.snr_norm || 0 : null,
+      })),
+      regressionA,
+      regressionB,
+      propagationNote,
+      warnings
     };
-  }, [allSpots, timeSeriesData, callA, callB, brushRange, beamwidth, showOnlyMatches, sortConfig]);
+  }, [baseData, timeSeriesData, callA, callB, brushRange, beamwidth, sortConfig, localThreshold, dxThreshold]);
 
   // --- Fetch Data ---
   const fetchData = async () => {
@@ -722,6 +803,153 @@ export default function App() {
               </ResponsiveContainer>
             </div>
           </div>
+
+          {/* Distance-SNR Correlation */}
+          <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[500px] md:h-[550px] lg:col-span-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 md:mb-6">
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-orange-500" /> Distance-SNR Correlation (Low-Angle Analysis)
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {processed.propagationNote && (
+                    <p className="text-[10px] text-orange-500 font-bold uppercase tracking-widest px-2 py-1 bg-orange-500/10 rounded border border-orange-500/20 w-fit">
+                      {processed.propagationNote}
+                    </p>
+                  )}
+                  {(processed.warnings.lowDataDx || processed.warnings.lowDataLocal) && (
+                    <p className="text-[10px] text-yellow-500 font-bold uppercase tracking-widest px-2 py-1 bg-yellow-500/10 rounded border border-yellow-500/20 w-fit">
+                      ⚠️ Insufficient data for selected thresholds
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-4 bg-zinc-900/50 p-2 rounded-lg border border-white/5">
+                  <div className="flex flex-col min-w-[80px]">
+                    <span className="text-[10px] text-zinc-500 uppercase font-bold leading-none mb-1">Local Thr.</span>
+                    <span className="text-xs font-mono text-orange-500 leading-none">{localThreshold} km</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="500" 
+                    max="3000" 
+                    step="100"
+                    value={localThreshold}
+                    onChange={(e) => setLocalThreshold(Number(e.target.value))}
+                    className="w-24 md:w-32 accent-orange-600 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center gap-4 bg-zinc-900/50 p-2 rounded-lg border border-white/5">
+                  <div className="flex flex-col min-w-[80px]">
+                    <span className="text-[10px] text-zinc-500 uppercase font-bold leading-none mb-1">DX Thr.</span>
+                    <span className="text-xs font-mono text-orange-500 leading-none">{dxThreshold} km</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="3000" 
+                    max="10000" 
+                    step="100"
+                    value={dxThreshold}
+                    onChange={(e) => setDxThreshold(Number(e.target.value))}
+                    className="w-24 md:w-32 accent-orange-600 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart margin={{ top: 10, right: 30, left: 0, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#262626" vertical={false} />
+                  <ReferenceLine x={localThreshold} stroke="#525252" strokeDasharray="3 3" label={{ value: 'Local', position: 'insideTopLeft', fill: '#525252', fontSize: 10 }} />
+                  <ReferenceLine x={dxThreshold} stroke="#525252" strokeDasharray="3 3" label={{ value: 'DX', position: 'insideTopLeft', fill: '#525252', fontSize: 10 }} />
+                  <XAxis 
+                    type="number" 
+                    dataKey="distance" 
+                    name="Distance" 
+                    unit=" km" 
+                    stroke="#525252" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false}
+                    domain={[0, 'auto']}
+                    tickFormatter={(val) => Math.round(val).toString()}
+                  />
+                  <YAxis 
+                    type="number" 
+                    stroke="#525252" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false}
+                    domain={[-40, 20]}
+                    tickFormatter={(val) => Math.round(val).toString()}
+                    label={{ value: 'Norm. SNR (dB)', angle: -90, position: 'insideLeft', fill: '#525252', fontSize: 10, offset: 10 }}
+                  />
+                  <ZAxis type="number" range={[64, 64]} />
+                  <Tooltip 
+                    cursor={{ strokeDasharray: '3 3' }} 
+                    contentStyle={{ backgroundColor: '#151515', border: '1px solid #262626', borderRadius: '8px', fontSize: '12px' }}
+                    formatter={(value: number, name: string) => [`${Math.round(value)} dB`, name]}
+                    labelFormatter={(label: number) => `${Math.round(label)} km`}
+                  />
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }} />
+                  
+                  <Scatter 
+                    name={callA} 
+                    dataKey="snr"
+                    data={processed.scatterData.filter(d => d.snrA !== null).map(d => ({ distance: d.distance, snr: d.snrA }))} 
+                    fill="#f97316" 
+                    strokeWidth={1}
+                    stroke="#f97316"
+                    opacity={0.6} 
+                  />
+                  {callB && (
+                    <Scatter 
+                      name={callB} 
+                      dataKey="snr"
+                      data={processed.scatterData.filter(d => d.snrB !== null).map(d => ({ distance: d.distance, snr: d.snrB }))} 
+                      fill="#06b6d4" 
+                      strokeWidth={1}
+                      stroke="#06b6d4"
+                      opacity={0.6} 
+                    />
+                  )}
+                  
+                  {processed.regressionA && (
+                    <Line
+                      name={`${callA} Trend`}
+                      data={[
+                        { distance: 0, snr: processed.regressionA.b },
+                        { distance: 20000, snr: processed.regressionA.m * 20000 + processed.regressionA.b }
+                      ]}
+                      dataKey="snr"
+                      stroke="#f97316"
+                      strokeWidth={2}
+                      dot={false}
+                      strokeDasharray="5 5"
+                      legendType="none"
+                    />
+                  )}
+                  {callB && processed.regressionB && (
+                    <Line
+                      name={`${callB} Trend`}
+                      data={[
+                        { distance: 0, snr: processed.regressionB.b },
+                        { distance: 20000, snr: processed.regressionB.m * 20000 + processed.regressionB.b }
+                      ]}
+                      dataKey="snr"
+                      stroke="#06b6d4"
+                      strokeWidth={2}
+                      dot={false}
+                      strokeDasharray="5 5"
+                      legendType="none"
+                    />
+                  )}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
 
         {/* Map */}
@@ -923,7 +1151,10 @@ export default function App() {
           <div className="p-6 border-b border-white/5 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Info className="w-5 h-5 text-orange-500" />
-              <h2 className="text-xl font-bold text-white">WSPR Antenna Lab Guide</h2>
+              <div>
+                <h2 className="text-xl font-bold text-white">WSPR Antenna Lab Guide</h2>
+                <p className="text-[10px] text-zinc-500 font-bold tracking-widest uppercase">Version {APP_VERSION}</p>
+              </div>
             </div>
             <button 
               onClick={() => setIsHelpOpen(false)}
@@ -937,55 +1168,57 @@ export default function App() {
             <section className="space-y-3">
               <h3 className="text-white font-bold uppercase tracking-wider text-xs">Overview</h3>
               <p>
-                WSPR Antenna Lab is a specialized tool designed for radio amateurs to compare the real-world performance of two antennas. 
-                By leveraging global WSPR (Weak Signal Propagation Reporter) data, it provides objective metrics on antenna gain and radiation patterns.
+                WSPR Antenna Lab is a specialized tool for radio amateurs to compare the real-world performance of two antennas. 
+                By leveraging global WSPR data, it provides objective metrics on gain, radiation patterns, and propagation efficiency.
               </p>
             </section>
 
             <section className="space-y-3">
-              <h3 className="text-white font-bold uppercase tracking-wider text-xs">How to use</h3>
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Analysis Workflow</h3>
               <div className="space-y-4">
                 <div className="flex gap-4">
                   <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">1</div>
-                  <p><strong className="text-zinc-200">Set Primary Station:</strong> Enter your callsign in "Callsign A". This is the antenna you are testing.</p>
+                  <p><strong className="text-zinc-200">Callsign A (Primary):</strong> The antenna you want to evaluate.</p>
                 </div>
                 <div className="flex gap-4">
                   <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">2</div>
-                  <p><strong className="text-zinc-200">Select Reference:</strong> Choose a nearby station as "Callsign B". Ideally, this station should be within 50km and use a known antenna (like a dipole) for comparison.</p>
+                  <p><strong className="text-zinc-200">Callsign B (Reference):</strong> A nearby station used as a baseline. Ideally within 50km and using a standard antenna (e.g., dipole) for a fair comparison.</p>
                 </div>
                 <div className="flex gap-4">
                   <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">3</div>
-                  <p><strong className="text-zinc-200">Analyze:</strong> Select your band and time window, then click Update. The dashboard will calculate the relative gain difference.</p>
+                  <p><strong className="text-zinc-200">Only Matches:</strong> Enable this to only analyze spots where both A and B were heard by the <em className="italic">same reporter</em> in the <em className="italic">same time slot</em>. This is the most accurate way to compare relative gain.</p>
                 </div>
               </div>
             </section>
 
             <section className="space-y-3">
-              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Key Concepts</h3>
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Core Analytics</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Radiation Pattern</h4>
+                  <p className="text-xs">
+                    Visualizes gain per azimuth in 10° bins. Use the <strong className="text-zinc-300">Beamwidth</strong> slider to adjust the smoothing sensitivity (averaging range) for each direction.
+                  </p>
+                </div>
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Low-Angle Analysis</h4>
+                  <p className="text-xs">
+                    Uses linear regression (Trendlines) on the SNR vs. Distance chart. A flatter trendline indicates better performance at low radiation angles, favoring long-distance (DX).
+                  </p>
+                </div>
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Custom Thresholds</h4>
+                  <p className="text-xs">
+                    Set your own <strong className="text-zinc-300">Local</strong> and <strong className="text-zinc-300">DX</strong> boundaries. The app calculates SNR drops between these zones to detect "DX Advantage".
+                  </p>
+                </div>
                 <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
                   <h4 className="text-zinc-200 font-bold mb-2">SNR Normalization</h4>
                   <p className="text-xs">
-                    Different stations use different power levels. We normalize data by subtracting the reported power (dBm) from the SNR. 
-                    <code className="block mt-2 text-orange-500">SNR_norm = SNR - Power</code>
-                  </p>
-                </div>
-                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
-                  <h4 className="text-zinc-200 font-bold mb-2">Antenna Delta ($\Delta G$)</h4>
-                  <p className="text-xs">
-                    This represents the average gain difference between your antenna and the reference. A +3dB delta means your antenna is performing twice as well as the reference.
+                    Normalized as <code className="text-orange-500">SNR - Power</code>. This prevents power differences from skewing the results.
                   </p>
                 </div>
               </div>
-            </section>
-
-            <section className="space-y-3">
-              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Visualizations</h3>
-              <ul className="list-disc list-inside space-y-2 marker:text-orange-500">
-                <li><strong className="text-zinc-200">Radiation Pattern:</strong> A smoothed polar chart showing gain at different azimuths. Use "Beamwidth" to adjust the smoothing sensitivity.</li>
-                <li><strong className="text-zinc-200">Propagation Map:</strong> Real-time visualization of where your signal is reaching.</li>
-                <li><strong className="text-zinc-200">Matches:</strong> A "Match" occurs when both A and B are heard by the same reporter in the same 2-minute WSPR slot. These are the most accurate data points for comparison.</li>
-              </ul>
             </section>
 
             <section className="space-y-4 pt-4 border-t border-white/5">

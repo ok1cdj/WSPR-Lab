@@ -23,4 +23,12 @@ export interface ProcessedData {
   mapLines: any[];
   countA: number;
   countB: number;
+  scatterData: { distance: number; snrA: number | null; snrB: number | null }[];
+  regressionA: { m: number; b: number } | null;
+  regressionB: { m: number; b: number } | null;
+  propagationNote: string | null;
+  warnings: {
+    lowDataDx: boolean;
+    lowDataLocal: boolean;
+  };
 }
