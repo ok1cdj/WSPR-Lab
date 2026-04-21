@@ -27,6 +27,8 @@ export interface ProcessedData {
   regressionA: { m: number; b: number } | null;
   regressionB: { m: number; b: number } | null;
   propagationNote: string | null;
+  avgPowerA: number | null;
+  avgPowerB: number | null;
   warnings: {
     lowDataDx: boolean;
     lowDataLocal: boolean;

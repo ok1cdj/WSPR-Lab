@@ -207,8 +207,10 @@ export default function App() {
       const date = parseISO(s.datetime);
       const slot = format(new Date(Math.floor(date.getTime() / (10 * 60 * 1000)) * (10 * 60 * 1000)), 'HH:mm');
       if (!timeGroups[slot]) timeGroups[slot] = { time: slot, snrA: [], snrB: [] };
-      if (s.transmitter === callA) timeGroups[slot].snrA.push(s.snr_norm || 0);
-      else if (s.transmitter === callB) timeGroups[slot].snrB.push(s.snr_norm || 0);
+      const upperCallA = callA.toUpperCase();
+      const upperCallB = callB.toUpperCase();
+      if (s.transmitter.toUpperCase() === upperCallA) timeGroups[slot].snrA.push(s.snr_norm || 0);
+      else if (s.transmitter.toUpperCase() === upperCallB) timeGroups[slot].snrB.push(s.snr_norm || 0);
     });
 
     return Object.values(timeGroups)
@@ -235,6 +237,8 @@ export default function App() {
         regressionA: null,
         regressionB: null,
         propagationNote: null,
+        avgPowerA: null,
+        avgPowerB: null,
         warnings: { lowDataDx: false, lowDataLocal: false }
       };
     }
@@ -254,11 +258,17 @@ export default function App() {
     }
 
     // Stats
-    const spotsA = filteredSpots.filter(s => s.transmitter === callA);
-    const spotsB = callB ? filteredSpots.filter(s => s.transmitter === callB) : [];
+    const upperCallA = callA.toUpperCase();
+    const upperCallB = callB.toUpperCase();
+    const spotsA = filteredSpots.filter(s => s.transmitter.toUpperCase() === upperCallA);
+    const spotsB = callB ? filteredSpots.filter(s => s.transmitter.toUpperCase() === upperCallB) : [];
+    
     const avgA = spotsA.length > 0 ? spotsA.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsA.length : null;
     const avgB = spotsB.length > 0 ? spotsB.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsB.length : null;
     const deltaG = (avgA !== null && avgB !== null) ? avgA - avgB : null;
+
+    const avgPowerA = spotsA.length > 0 ? spotsA.reduce((acc, s) => acc + s.power, 0) / spotsA.length : null;
+    const avgPowerB = spotsB.length > 0 ? spotsB.reduce((acc, s) => acc + s.power, 0) / spotsB.length : null;
 
     // Polar Data
     const azimuthBins: Record<number, { azimuth: number, snrA: number[], snrB: number[] }> = {};
@@ -406,6 +416,8 @@ export default function App() {
       regressionA,
       regressionB,
       propagationNote,
+      avgPowerA,
+      avgPowerB,
       warnings
     };
   }, [baseData, timeSeriesData, callA, callB, brushRange, beamwidth, sortConfig, localThreshold, dxThreshold]);
@@ -476,7 +488,14 @@ export default function App() {
             
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-zinc-400 mb-1 block">Callsign A (Primary)</label>
+                <label className="text-xs text-zinc-400 mb-1 block flex justify-between items-center">
+                  Callsign A (Primary)
+                  {processed.avgPowerA !== null && (
+                    <span className="text-[10px] font-mono text-orange-500 font-bold bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/20">
+                      {processed.avgPowerA.toFixed(1)} dBm
+                    </span>
+                  )}
+                </label>
                 <input 
                   type="text" 
                   value={callA}
@@ -485,12 +504,19 @@ export default function App() {
                 />
               </div>
               <div>
-                <label className="text-xs text-zinc-400 mb-1 block flex justify-between">
-                  Callsign B (Reference)
-                  <span className="flex gap-2">
-                    {nearbyError && <AlertCircle className="w-3 h-3 text-red-500" title="Failed to fetch nearby stations" />}
-                    {loadingNearby && <RefreshCw className="w-3 h-3 animate-spin" />}
-                  </span>
+                <label className="text-xs text-zinc-400 mb-1 block flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    Callsign B (Reference)
+                    <span className="flex gap-2">
+                      {nearbyError && <AlertCircle className="w-3 h-3 text-red-500" title="Failed to fetch nearby stations" />}
+                      {loadingNearby && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    </span>
+                  </div>
+                  {processed.avgPowerB !== null && (
+                    <span className="text-[10px] font-mono text-cyan-500 font-bold bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                      {processed.avgPowerB.toFixed(1)} dBm
+                    </span>
+                  )}
                 </label>
                 <select 
                   value={callB}
@@ -544,6 +570,26 @@ export default function App() {
             {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Activity className="w-4 h-4" />}
             Update Dashboard
           </button>
+
+          {callB && (
+            <div className="p-3 bg-zinc-900/30 rounded-xl border border-white/5 space-y-3">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div className="flex flex-col">
+                  <span className="text-zinc-300 text-xs font-bold">Only Matches</span>
+                  <span className="text-[9px] text-zinc-500 uppercase font-black tracking-widest mt-0.5">Strict Comparison</span>
+                </div>
+                <div className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer" 
+                    checked={showOnlyMatches}
+                    onChange={(e) => setShowOnlyMatches(e.target.checked)}
+                  />
+                  <div className="w-8 h-4 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-500 after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-orange-600 peer-checked:after:bg-white"></div>
+                </div>
+              </label>
+            </div>
+          )}
 
           <button 
             onClick={() => setIsHelpOpen(true)}
@@ -653,7 +699,7 @@ export default function App() {
         {/* Charts Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8 mb-8">
           {/* SNR vs Time */}
-          <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[350px] md:h-[400px]">
+          <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[400px] md:h-[450px]">
             <div className="flex items-center justify-between mb-4 md:mb-6">
               <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-orange-500" /> SNR Normalized vs Time
@@ -1024,30 +1070,6 @@ export default function App() {
               <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
                 <TableIcon className="w-4 h-4 text-orange-500" /> Recent Spots & Comparisons
               </h3>
-              
-              {callB && (
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <div className="relative">
-                    <input 
-                      type="checkbox" 
-                      className="sr-only" 
-                      checked={showOnlyMatches}
-                      onChange={() => setShowOnlyMatches(!showOnlyMatches)}
-                    />
-                    <div className={cn(
-                      "w-8 h-4 rounded-full transition-colors",
-                      showOnlyMatches ? "bg-orange-600" : "bg-zinc-800"
-                    )} />
-                    <div className={cn(
-                      "absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform",
-                      showOnlyMatches ? "translate-x-4" : "translate-x-0"
-                    )} />
-                  </div>
-                  <span className="text-[10px] uppercase font-bold text-zinc-500 group-hover:text-zinc-300 transition-colors">
-                    Only Matches
-                  </span>
-                </label>
-              )}
             </div>
             
             <div className="flex gap-4 text-[10px] uppercase tracking-wider font-semibold">
