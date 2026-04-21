@@ -451,21 +451,21 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0a0a0a] text-zinc-300 relative">
+    <div className="flex h-screen h-[100dvh] overflow-hidden bg-[#0a0a0a] text-zinc-300 relative">
       {/* Sidebar Overlay for mobile */}
       {isSidebarOpen && (
         <div 
-          className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm transition-opacity duration-300" 
+          className="fixed inset-0 bg-black/80 z-[3000] md:hidden backdrop-blur-md transition-opacity duration-300" 
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-80 border-r border-white/10 bg-[#0f0f0f] p-6 flex flex-col gap-8 transition-all duration-300 ease-in-out md:relative md:translate-x-0",
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full md:-ml-80"
+        "fixed inset-y-0 left-0 z-[4000] w-[280px] sm:w-80 border-r border-white/10 bg-[#0f0f0f] flex flex-col transition-all duration-300 ease-in-out md:relative md:translate-x-0 h-full",
+        isSidebarOpen ? "translate-x-0 shadow-[20px_0_50px_rgba(0,0,0,0.5)]" : "-translate-x-full md:-ml-80"
       )}>
-        <div className="flex items-center justify-between">
+        <div className="p-6 flex items-center justify-between border-b border-white/5 shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-orange-500/20 rounded-lg">
               <Radio className="w-6 h-6 text-orange-500" />
@@ -474,13 +474,14 @@ export default function App() {
           </div>
           <button 
             onClick={() => setIsSidebarOpen(false)}
-            className="p-2 text-zinc-500 hover:text-white transition-colors"
+            className="p-3 -mr-2 text-zinc-500 hover:text-white transition-colors lg:hidden"
+            aria-label="Close settings"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6" />
           </button>
         </div>
 
-        <div className="space-y-6 overflow-y-auto custom-scrollbar pr-2">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6 space-y-8 overscroll-contain">
           <div className="space-y-4">
             <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500 flex items-center gap-2">
               <Settings className="w-3 h-3" /> Configuration
@@ -611,9 +612,12 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
+      <main className={cn(
+        "flex-1 overflow-y-auto custom-scrollbar flex flex-col overscroll-contain relative h-full",
+        isSidebarOpen && "md:overflow-y-auto overflow-hidden pointer-events-none md:pointer-events-auto"
+      )}>
         {/* Mobile Header */}
-        <header className="sticky top-0 z-[1000] bg-[#0a0a0a]/80 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between md:hidden">
+        <header className="sticky top-0 z-[2500] bg-[#0a0a0a]/90 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between md:hidden">
           <div className="flex items-center gap-2">
             <Radio className="w-5 h-5 text-orange-500" />
             <h1 className="text-lg font-bold text-white">WSPR Lab</h1>
@@ -1169,8 +1173,8 @@ export default function App() {
           className="absolute inset-0 bg-black/80 backdrop-blur-sm" 
           onClick={() => setIsHelpOpen(false)}
         />
-        <div className="relative bg-[#151515] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b border-white/5 flex items-center justify-between">
+        <div className="relative bg-[#151515] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[90vh] max-h-[90dvh] overflow-hidden flex flex-col shadow-2xl">
+          <div className="p-6 border-b border-white/5 flex items-center justify-between shadow-sm">
             <div className="flex items-center gap-3">
               <Info className="w-5 h-5 text-orange-500" />
               <div>
