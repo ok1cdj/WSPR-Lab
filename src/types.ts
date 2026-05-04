@@ -12,6 +12,7 @@ export interface WSPRSpot {
   snr_norm?: number;
   isMatch?: boolean;
   matchedSNR?: number;
+  matchedSNRNorm?: number;
   distance?: number;
 }
 
@@ -29,6 +30,8 @@ export interface ProcessedData {
   propagationNote: string | null;
   avgPowerA: number | null;
   avgPowerB: number | null;
+  avgDelta: number | null;
+  stdDevDelta: number | null;
   warnings: {
     lowDataDx: boolean;
     lowDataLocal: boolean;

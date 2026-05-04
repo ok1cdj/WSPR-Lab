@@ -10,9 +10,10 @@ app.use(express.json());
 
 // API Route for WSPR query
 app.post("/api/wspr", async (req, res) => {
-  const { call1, call2, band, hours } = req.body;
+  const { call1, call2, band, hours, viewMode = 'TX' } = req.body;
 
   // Construct SQL query for wspr.live
+  const targetSign = viewMode === 'RX' ? 'rx_sign' : 'tx_sign';
   const transmitters = [call1, call2].filter(Boolean).map(c => `'${c}'`).join(',');
   
   // Ensure band is treated as a number in the query
@@ -23,7 +24,7 @@ app.post("/api/wspr", async (req, res) => {
         time as datetime, tx_sign as transmitter, rx_sign as reporter, snr, power,
         tx_lat, tx_lon, rx_lat, rx_lon, azimuth
     FROM wspr.rx
-    WHERE tx_sign IN (${transmitters})
+    WHERE ${targetSign} IN (${transmitters})
       AND band = ${bandNum}
       AND time > now() - INTERVAL ${hours} HOUR
     ORDER BY time DESC
@@ -60,22 +61,26 @@ app.post("/api/wspr", async (req, res) => {
 
 // API Route to find nearby stations
 app.post("/api/nearby", async (req, res) => {
-  const { callA, band } = req.body;
+  const { callA, band, viewMode = 'TX' } = req.body;
   const bandNum = parseInt(band);
 
   if (!callA || isNaN(bandNum)) {
     return res.status(400).json({ error: "Invalid parameters" });
   }
 
+  const targetSign = viewMode === 'RX' ? 'rx_sign' : 'tx_sign';
+  const targetLat = viewMode === 'RX' ? 'rx_lat' : 'tx_lat';
+  const targetLon = viewMode === 'RX' ? 'rx_lon' : 'tx_lon';
+
   try {
     // 1. Get location of callA (most recent, within last 7 days)
     const locSql = `
-      SELECT tx_lat, tx_lon 
+      SELECT ${targetLat} as lat, ${targetLon} as lon 
       FROM wspr.rx 
-      WHERE tx_sign = '${callA}' 
+      WHERE ${targetSign} = '${callA}' 
         AND time > now() - INTERVAL 7 DAY
-        AND tx_lat != 0 
-        AND tx_lon != 0
+        AND ${targetLat} != 0 
+        AND ${targetLon} != 0
       ORDER BY time DESC
       LIMIT 1 
       FORMAT JSON
@@ -100,7 +105,7 @@ app.post("/api/nearby", async (req, res) => {
       return res.json({ stations: [] });
     }
 
-    const { tx_lat: latA, tx_lon: lonA } = locData.data[0];
+    const { lat: latA, lon: lonA } = locData.data[0];
 
     if (latA === undefined || lonA === undefined) {
       return res.json({ stations: [] });
@@ -109,16 +114,16 @@ app.post("/api/nearby", async (req, res) => {
     // 2. Find nearby transmitters on the same band
     // Use geoDistance for better performance in ClickHouse
     const nearbySql = `
-      SELECT tx_sign, 
-             min(geoDistance(tx_lon, tx_lat, ${lonA}, ${latA})) as distance,
+      SELECT ${targetSign} as tx_sign, 
+             min(geoDistance(${targetLon}, ${targetLat}, ${lonA}, ${latA})) as distance,
              max(power) as power
       FROM wspr.rx
       WHERE band = ${bandNum}
         AND time > now() - INTERVAL 4 HOUR
-        AND tx_sign != '${callA}'
-        AND tx_lat != 0
-        AND tx_lon != 0
-      GROUP BY tx_sign
+        AND ${targetSign} != '${callA}'
+        AND ${targetLat} != 0
+        AND ${targetLon} != 0
+      GROUP BY ${targetSign}
       ORDER BY distance ASC
       LIMIT 30
       FORMAT JSON

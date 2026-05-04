@@ -58,6 +58,16 @@ function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
   return d * 6371;
 }
 
+function getBearing(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const toRad = (deg: number) => deg * Math.PI / 180;
+  const toDeg = (rad: number) => rad * 180 / Math.PI;
+  const φ1 = toRad(lat1), λ1 = toRad(lon1);
+  const φ2 = toRad(lat2), λ2 = toRad(lon2);
+  const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
 // --- Constants ---
 const APP_VERSION = 'v1.3.0';
 
@@ -84,6 +94,7 @@ const TIME_WINDOWS = [
 
 export default function App() {
   // --- State ---
+  const [viewMode, setViewMode] = useState<'TX' | 'RX'>('TX');
   const [callA, setCallA] = useState(() => localStorage.getItem('wspr_callA') || 'OK1CDJ');
   const [callB, setCallB] = useState(() => localStorage.getItem('wspr_callB') || '');
   const [band, setBand] = useState(() => localStorage.getItem('wspr_band') || '14');
@@ -130,7 +141,7 @@ export default function App() {
       const response = await fetch('/api/nearby', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callA, band }),
+        body: JSON.stringify({ callA, band, viewMode }),
       });
       if (!response.ok) throw new Error('Failed to fetch nearby stations');
       const data = await response.json();
@@ -154,7 +165,7 @@ export default function App() {
 
   useEffect(() => {
     fetchNearby();
-  }, [callA, band]);
+  }, [callA, band, viewMode]);
 
   // --- Data Processing ---
   // --- Data Processing ---
@@ -166,33 +177,40 @@ export default function App() {
     const base = rawData.map(d => ({
       ...d,
       snr_norm: d.snr - d.power,
-      distance: getDistance(d.tx_lat, d.tx_lon, d.rx_lat, d.rx_lon)
+      distance: getDistance(d.tx_lat, d.tx_lon, d.rx_lat, d.rx_lon),
+      azimuth: viewMode === 'RX' ? getBearing(d.rx_lat, d.rx_lon, d.tx_lat, d.tx_lon) : d.azimuth
     }));
 
-    const spotsByTimeAndReporter: Record<string, Record<string, WSPRSpot>> = {};
+    const spotsByTimeAndPeer: Record<string, Record<string, WSPRSpot>> = {};
     const result: WSPRSpot[] = base.map(s => ({
       ...s,
       isMatch: false,
-      matchedSNR: undefined
+      matchedSNR: undefined,
+      matchedSNRNorm: undefined
     }));
 
     result.forEach(s => {
-      const key = `${s.datetime}_${s.reporter}`;
-      if (!spotsByTimeAndReporter[key]) spotsByTimeAndReporter[key] = {};
-      spotsByTimeAndReporter[key][s.transmitter] = s;
+      const peer = viewMode === 'TX' ? s.reporter : s.transmitter;
+      const target = viewMode === 'TX' ? s.transmitter : s.reporter;
+      const key = `${s.datetime}_${peer}`;
+      if (!spotsByTimeAndPeer[key]) spotsByTimeAndPeer[key] = {};
+      spotsByTimeAndPeer[key][target] = s;
     });
 
     result.forEach(s => {
-      const key = `${s.datetime}_${s.reporter}`;
-      const otherCall = s.transmitter === callA ? callB : callA;
-      if (otherCall && spotsByTimeAndReporter[key][otherCall]) {
+      const peer = viewMode === 'TX' ? s.reporter : s.transmitter;
+      const target = viewMode === 'TX' ? s.transmitter : s.reporter;
+      const key = `${s.datetime}_${peer}`;
+      const otherCall = target === callA ? callB : callA;
+      if (otherCall && spotsByTimeAndPeer[key][otherCall]) {
         s.isMatch = true;
-        s.matchedSNR = spotsByTimeAndReporter[key][otherCall].snr;
+        s.matchedSNR = spotsByTimeAndPeer[key][otherCall].snr;
+        s.matchedSNRNorm = spotsByTimeAndPeer[key][otherCall].snr_norm;
       }
     });
 
     return result;
-  }, [rawData, callA, callB]);
+  }, [rawData, callA, callB, viewMode]);
 
   // 2. Base data for visualizations (respecting showOnlyMatches)
   const baseData = useMemo(() => {
@@ -209,8 +227,9 @@ export default function App() {
       if (!timeGroups[slot]) timeGroups[slot] = { time: slot, snrA: [], snrB: [] };
       const upperCallA = callA.toUpperCase();
       const upperCallB = callB.toUpperCase();
-      if (s.transmitter.toUpperCase() === upperCallA) timeGroups[slot].snrA.push(s.snr_norm || 0);
-      else if (s.transmitter.toUpperCase() === upperCallB) timeGroups[slot].snrB.push(s.snr_norm || 0);
+      const target = viewMode === 'TX' ? s.transmitter : s.reporter;
+      if (target.toUpperCase() === upperCallA) timeGroups[slot].snrA.push(s.snr_norm || 0);
+      else if (target.toUpperCase() === upperCallB) timeGroups[slot].snrB.push(s.snr_norm || 0);
     });
 
     return Object.values(timeGroups)
@@ -239,6 +258,8 @@ export default function App() {
         propagationNote: null,
         avgPowerA: null,
         avgPowerB: null,
+        avgDelta: null,
+        stdDevDelta: null,
         warnings: { lowDataDx: false, lowDataLocal: false }
       };
     }
@@ -260,8 +281,8 @@ export default function App() {
     // Stats
     const upperCallA = callA.toUpperCase();
     const upperCallB = callB.toUpperCase();
-    const spotsA = filteredSpots.filter(s => s.transmitter.toUpperCase() === upperCallA);
-    const spotsB = callB ? filteredSpots.filter(s => s.transmitter.toUpperCase() === upperCallB) : [];
+    const spotsA = filteredSpots.filter(s => (viewMode === 'TX' ? s.transmitter : s.reporter).toUpperCase() === upperCallA);
+    const spotsB = callB ? filteredSpots.filter(s => (viewMode === 'TX' ? s.transmitter : s.reporter).toUpperCase() === upperCallB) : [];
     
     const avgA = spotsA.length > 0 ? spotsA.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsA.length : null;
     const avgB = spotsB.length > 0 ? spotsB.reduce((acc, s) => acc + (s.snr_norm || 0), 0) / spotsB.length : null;
@@ -270,15 +291,39 @@ export default function App() {
     const avgPowerA = spotsA.length > 0 ? spotsA.reduce((acc, s) => acc + s.power, 0) / spotsA.length : null;
     const avgPowerB = spotsB.length > 0 ? spotsB.reduce((acc, s) => acc + s.power, 0) / spotsB.length : null;
 
+    // Delta Stats
+    const deltaValues = filteredSpots
+      .filter(s => s.isMatch && s.snr_norm !== undefined && s.matchedSNRNorm !== undefined)
+      .map(s => {
+        const isA = (viewMode === 'TX' ? s.transmitter : s.reporter) === callA;
+        return isA ? s.snr_norm! - s.matchedSNRNorm! : s.matchedSNRNorm! - s.snr_norm!;
+      });
+    
+    // We get duplicates because each match has two rows (one for A, one for B).
+    // Let's take only the rows for station A to avoid double-counting.
+    const uniqueDeltaValues = filteredSpots
+      .filter(s => s.isMatch && s.snr_norm !== undefined && s.matchedSNRNorm !== undefined && (viewMode === 'TX' ? s.transmitter : s.reporter) === callA)
+      .map(s => s.snr_norm! - s.matchedSNRNorm!);
+
+    let avgDelta: number | null = null;
+    let stdDevDelta: number | null = null;
+    if (uniqueDeltaValues.length > 0) {
+      const sum = uniqueDeltaValues.reduce((a, b) => a + b, 0);
+      avgDelta = sum / uniqueDeltaValues.length;
+      const variance = uniqueDeltaValues.reduce((a, b) => a + Math.pow(b - avgDelta!, 2), 0) / uniqueDeltaValues.length;
+      stdDevDelta = Math.sqrt(variance);
+    }
+
     // Polar Data
     const azimuthBins: Record<number, { azimuth: number, snrA: number[], snrB: number[] }> = {};
     for (let i = 0; i < 360; i += 10) azimuthBins[i] = { azimuth: i, snrA: [], snrB: [] };
 
     filteredSpots.forEach(s => {
       const bin = Math.floor(s.azimuth / 10) * 10;
+      const target = viewMode === 'TX' ? s.transmitter : s.reporter;
       if (azimuthBins[bin]) {
-        if (s.transmitter === callA) azimuthBins[bin].snrA.push(s.snr_norm || 0);
-        else if (s.transmitter === callB) azimuthBins[bin].snrB.push(s.snr_norm || 0);
+        if (target === callA) azimuthBins[bin].snrA.push(s.snr_norm || 0);
+        else if (target === callB) azimuthBins[bin].snrB.push(s.snr_norm || 0);
       }
     });
 
@@ -408,16 +453,21 @@ export default function App() {
       mapLines: filteredSpots,
       countA: spotsA.length,
       countB: spotsB.length,
-      scatterData: filteredSpots.map(s => ({
-        distance: s.distance || 0,
-        snrA: s.transmitter === callA ? s.snr_norm || 0 : null,
-        snrB: s.transmitter === callB ? s.snr_norm || 0 : null,
-      })),
+      scatterData: filteredSpots.map(s => {
+        const target = viewMode === 'TX' ? s.transmitter : s.reporter;
+        return {
+          distance: s.distance || 0,
+          snrA: target === callA ? s.snr_norm || 0 : null,
+          snrB: target === callB ? s.snr_norm || 0 : null,
+        };
+      }),
       regressionA,
       regressionB,
       propagationNote,
       avgPowerA,
       avgPowerB,
+      avgDelta,
+      stdDevDelta,
       warnings
     };
   }, [baseData, timeSeriesData, callA, callB, brushRange, beamwidth, sortConfig, localThreshold, dxThreshold]);
@@ -430,7 +480,7 @@ export default function App() {
       const response = await fetch('/api/wspr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ call1: callA, call2: callB, band, hours }),
+        body: JSON.stringify({ call1: callA, call2: callB, band, hours, viewMode }),
       });
       if (!response.ok) throw new Error('Failed to fetch WSPR data');
       const data = await response.json();
@@ -487,11 +537,32 @@ export default function App() {
               <Settings className="w-3 h-3" /> Configuration
             </label>
             
+            <div className="bg-zinc-900 border border-white/5 rounded-lg p-1 flex mb-4">
+              <button
+                onClick={() => setViewMode('TX')}
+                className={cn(
+                  "flex-1 text-xs font-bold py-2 rounded-md transition-all",
+                  viewMode === 'TX' ? "bg-orange-600 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                TX Analysis
+              </button>
+              <button
+                onClick={() => setViewMode('RX')}
+                className={cn(
+                  "flex-1 text-xs font-bold py-2 rounded-md transition-all",
+                  viewMode === 'RX' ? "bg-orange-600 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                RX Analysis
+              </button>
+            </div>
+            
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-zinc-400 mb-1 block flex justify-between items-center">
                   Callsign A (Primary)
-                  {processed.avgPowerA !== null && (
+                  {viewMode === 'TX' && processed.avgPowerA !== null && (
                     <span className="text-[10px] font-mono text-orange-500 font-bold bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/20">
                       {processed.avgPowerA.toFixed(1)} dBm
                     </span>
@@ -513,7 +584,7 @@ export default function App() {
                       {loadingNearby && <RefreshCw className="w-3 h-3 animate-spin" />}
                     </span>
                   </div>
-                  {processed.avgPowerB !== null && (
+                  {viewMode === 'TX' && processed.avgPowerB !== null && (
                     <span className="text-[10px] font-mono text-cyan-500 font-bold bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
                       {processed.avgPowerB.toFixed(1)} dBm
                     </span>
@@ -650,12 +721,20 @@ export default function App() {
           )}
 
           {/* Top Stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 md:gap-6 mb-8">
+          {viewMode === 'RX' && (
+            <div className="mb-4 md:mb-6 p-4 bg-cyan-950/20 border border-cyan-900/30 rounded-lg flex items-start gap-3 text-cyan-500 text-sm">
+              <Info className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <strong>Comparison mode:</strong> Assessing relative antenna sensitivity and local noise floor based on shared transmitters.
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-8">
             <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl relative overflow-hidden group">
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <Activity className="w-12 h-12" />
               </div>
-              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Antenna &Delta;G</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Global &Delta;G</p>
               <div className="flex items-baseline gap-2">
                 <h2 className={cn(
                   "text-4xl md:text-5xl font-black tracking-tighter",
@@ -666,7 +745,36 @@ export default function App() {
                 <span className="text-xl font-bold text-zinc-600">dB</span>
               </div>
               <p className="text-[10px] text-zinc-500 mt-2 italic">
-                {callB ? `Relative gain of ${callA} vs ${callB}` : 'Reference station required'}
+                {callB ? `All spots average difference` : 'Reference station required'}
+              </p>
+            </div>
+
+            <div className="bg-[#151515] border border-orange-500/10 p-4 md:p-6 rounded-xl relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <CheckCircle2 className="w-12 h-12 text-orange-500" />
+              </div>
+              <div className="flex items-center gap-1 group relative cursor-help">
+                <p className="text-xs font-bold uppercase tracking-widest text-zinc-300 mb-2">Average System Advantage</p>
+                <div className="absolute bottom-full left-0 mb-2 w-[240px] p-3 bg-zinc-900 border border-white/10 rounded-lg text-xs leading-relaxed text-zinc-300 shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 normal-case tracking-normal">
+                  Mean delta for paired spots (matched identically by time and peer). Gives the true head-to-head advantage.
+                </div>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <h2 className={cn(
+                  "text-4xl md:text-5xl font-black tracking-tighter",
+                  processed.avgDelta !== null ? (processed.avgDelta >= 0 ? "text-green-500" : "text-red-500") : "text-zinc-700"
+                )}>
+                  {processed.avgDelta !== null ? `${processed.avgDelta > 0 ? '+' : ''}${processed.avgDelta.toFixed(1)}` : '--.-'}
+                </h2>
+                <span className="text-xl font-bold text-zinc-600">dB</span>
+              </div>
+              <p className={cn(
+                  "text-[10px] mt-2 font-bold",
+                  processed.stdDevDelta !== null && processed.stdDevDelta > 5 ? "text-orange-400" : "text-zinc-500"
+                )}>
+                {processed.stdDevDelta !== null ? (
+                  processed.stdDevDelta > 5 ? "High variance due to distance/propagation." : `Confidence interval ±${processed.stdDevDelta.toFixed(1)}dB`
+                ) : 'Requires matches'}
               </p>
             </div>
 
@@ -689,13 +797,15 @@ export default function App() {
               </div>
             </div>
 
-            <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl sm:col-span-2 md:col-span-1">
-              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Active Reporters</p>
+            <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl">
+              <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">
+                {viewMode === 'TX' ? 'Active Reporters' : 'Active Transmitters'}
+              </p>
               <h2 className="text-4xl md:text-5xl font-black tracking-tighter text-white">
-                {new Set(processed.spots.map(s => s.reporter)).size}
+                {new Set(processed.spots.map(s => viewMode === 'TX' ? s.reporter : s.transmitter)).size}
               </h2>
               <p className="text-[10px] text-zinc-500 mt-2">
-                Unique receiving stations
+                {viewMode === 'TX' ? 'Unique receiving stations' : 'Unique transmitting stations'}
               </p>
             </div>
           </div>
@@ -706,7 +816,7 @@ export default function App() {
           <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[400px] md:h-[450px]">
             <div className="flex items-center justify-between mb-4 md:mb-6">
               <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
-                <Activity className="w-4 h-4 text-orange-500" /> SNR Normalized vs Time
+                <Activity className="w-4 h-4 text-orange-500" /> {viewMode === 'TX' ? 'SNR Normalized vs Time' : 'Receive Efficiency (dB)'}
               </h3>
             </div>
             <div className="flex-1 min-h-0">
@@ -766,11 +876,19 @@ export default function App() {
             </div>
           </div>
 
-          {/* Polar Radiation Pattern */}
+          {/* Polar Pattern */}
           <div className="bg-[#151515] border border-white/5 p-4 md:p-6 rounded-xl flex flex-col h-[400px] md:h-[450px]">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 md:mb-6">
               <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
-                <Compass className="w-4 h-4 text-orange-500" /> Radiation Pattern
+                <Compass className="w-4 h-4 text-orange-500" /> {viewMode === 'TX' ? 'Observed Signal Coverage' : 'Observed Reception Pattern'}
+                <div className="relative group flex items-center ml-1">
+                  <Info className="w-4 h-4 text-zinc-500 group-hover:text-cyan-500 cursor-help transition-colors" />
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-[280px] sm:w-[320px] p-3 bg-zinc-900 border border-white/10 rounded-lg text-xs leading-relaxed text-zinc-300 shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 normal-case tracking-normal">
+                    {viewMode === 'TX' 
+                      ? "This chart visualizes where your signal was actually decoded. Please note: The shape is defined by both your antenna's performance and the current global distribution of active WSPR receivers. A 'null' in a certain direction may indicate a lack of available reporters rather than a flaw in the antenna."
+                      : "This chart visualizes where you are receiving signals from. The shape is defined by both your antenna's performance and the current active WSPR transmitters."}
+                  </div>
+                </div>
               </h3>
               
               <div className="flex items-center gap-4 bg-zinc-900/50 p-2 rounded-lg border border-white/5">
@@ -1020,12 +1138,17 @@ export default function App() {
                 url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
               />
-              {processed.spots.slice(0, 500).map((s, idx) => (
+              {processed.spots.slice(0, 500).map((s, idx) => {
+                const target = viewMode === 'TX' ? s.transmitter : s.reporter;
+                const isA = target === callA;
+                const centerLat = viewMode === 'TX' ? s.rx_lat : s.tx_lat;
+                const centerLon = viewMode === 'TX' ? s.rx_lon : s.tx_lon;
+                return (
                 <React.Fragment key={idx}>
                   <Polyline 
                     positions={getGreatCirclePath(s.tx_lat, s.tx_lon, s.rx_lat, s.rx_lon)}
                     pathOptions={{ 
-                      color: s.transmitter === callA ? '#f97316' : '#06b6d4', 
+                      color: isA ? '#f97316' : '#06b6d4', 
                       weight: Math.max(1, (s.snr_norm || 0) / 10 + 2),
                       opacity: s.isMatch ? 0.6 : 0.2
                     }}
@@ -1041,10 +1164,10 @@ export default function App() {
                     </Popup>
                   </Polyline>
                   <CircleMarker 
-                    center={[s.rx_lat, s.rx_lon]} 
+                    center={[centerLat, centerLon]} 
                     radius={s.isMatch ? 4 : 2}
                     pathOptions={{ 
-                      fillColor: s.transmitter === callA ? '#f97316' : '#06b6d4', 
+                      fillColor: isA ? '#f97316' : '#06b6d4', 
                       fillOpacity: 0.8,
                       stroke: s.isMatch,
                       color: '#fff',
@@ -1053,16 +1176,16 @@ export default function App() {
                   >
                     <Popup>
                       <div className="text-xs">
-                        <strong>Reporter:</strong> {s.reporter}<br/>
+                        <strong>{viewMode === 'TX' ? 'Reporter' : 'Transmitter'}:</strong> {viewMode === 'TX' ? s.reporter : s.transmitter}<br/>
                         <strong>Distance:</strong> {s.distance?.toFixed(0)} km<br/>
                         <strong>SNR Norm:</strong> {s.snr_norm?.toFixed(1)} dB<br/>
-                        <strong>Azimuth:</strong> {s.azimuth}°
+                        <strong>Azimuth:</strong> {s.azimuth?.toFixed(0)}°
                         {s.isMatch && <div className="mt-1 text-green-500 font-bold">MATCH FOUND</div>}
                       </div>
                     </Popup>
                   </CircleMarker>
                 </React.Fragment>
-              ))}
+              )})}
             </MapContainer>
           </div>
         </div>
@@ -1120,6 +1243,14 @@ export default function App() {
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Pwr</th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Norm</th>
                   <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-center">Match</th>
+                  <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right group relative">
+                    <div className="flex items-center justify-end gap-1 cursor-help">
+                      Delta
+                      <div className="absolute bottom-full right-0 mb-2 w-[240px] p-3 bg-zinc-900 border border-white/10 rounded-lg text-xs leading-relaxed text-zinc-300 shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 normal-case tracking-normal">
+                        Calculated as (A - B) for spots received/transmitted at the same time. Positive value means Station A performed better.
+                      </div>
+                    </div>
+                  </th>
                   {callB && <th className="p-2 md:p-4 font-bold uppercase tracking-widest text-right">Ref</th>}
                 </tr>
               </thead>
@@ -1131,10 +1262,17 @@ export default function App() {
                   )}>
                     <td className="p-2 md:p-4 text-zinc-400">{format(parseISO(s.datetime), 'HH:mm')}</td>
                     <td className={cn(
-                      "p-2 md:p-4 font-mono font-bold",
-                      s.transmitter === callA ? "text-orange-500" : "text-blue-500"
+                      "p-2 md:p-4 font-mono",
+                      viewMode === 'TX' 
+                        ? (s.transmitter === callA ? "font-bold text-orange-500" : "font-bold text-blue-500")
+                        : "text-zinc-300"
                     )}>{s.transmitter}</td>
-                    <td className="p-2 md:p-4 font-mono text-zinc-300">{s.reporter}</td>
+                    <td className={cn(
+                      "p-2 md:p-4 font-mono",
+                      viewMode === 'RX'
+                        ? (s.reporter === callA ? "font-bold text-orange-500" : "font-bold text-blue-500")
+                        : "text-zinc-300"
+                    )}>{s.reporter}</td>
                     <td className="p-2 md:p-4 text-right font-mono text-zinc-400">{s.distance?.toFixed(0)}</td>
                     <td className="p-2 md:p-4 text-right font-mono text-white">{s.snr}</td>
                     <td className="p-2 md:p-4 text-right font-mono text-zinc-500">{s.power}</td>
@@ -1145,6 +1283,19 @@ export default function App() {
                           <CheckCircle2 className="w-4 h-4 text-green-500" />
                         </div>
                       )}
+                    </td>
+                    <td className="p-2 md:p-4 text-right font-mono">
+                      {s.isMatch && s.snr_norm !== undefined && s.matchedSNRNorm !== undefined ? (() => {
+                        const isA = (viewMode === 'TX' ? s.transmitter : s.reporter) === callA;
+                        const delta = isA ? s.snr_norm - s.matchedSNRNorm : s.matchedSNRNorm - s.snr_norm;
+                        return (
+                          <span className={cn(
+                            delta > 0 ? "text-green-500 font-bold" : (delta < 0 ? "text-orange-500 font-bold" : "text-zinc-400")
+                          )}>
+                            {delta > 0 ? '+' : ''}{delta.toFixed(1)} dB
+                          </span>
+                        );
+                      })() : <span className="text-zinc-600">-</span>}
                     </td>
                     {callB && (
                       <td className="p-2 md:p-4 text-right font-mono text-zinc-500">
@@ -1195,8 +1346,22 @@ export default function App() {
               <h3 className="text-white font-bold uppercase tracking-wider text-xs">Overview</h3>
               <p>
                 WSPR Antenna Lab is a specialized tool for radio amateurs to compare the real-world performance of two antennas. 
-                By leveraging global WSPR data, it provides objective metrics on gain, radiation patterns, and propagation efficiency.
+                By leveraging global WSPR data, it provides objective metrics on gain, signal coverage, and propagation efficiency.
               </p>
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-white font-bold uppercase tracking-wider text-xs">Analysis Modes</h3>
+              <div className="space-y-4">
+                <div className="flex gap-4">
+                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">TX</div>
+                  <p><strong className="text-zinc-200">TX Analysis:</strong> Evaluates your transmit antenna by analyzing spots from global receivers that decoded your signal.</p>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-500 flex items-center justify-center shrink-0 font-bold text-xs">RX</div>
+                  <p><strong className="text-zinc-200">RX Analysis:</strong> Assesses your receiving antenna's sensitivity and local noise floor based on distant transmitters you hear.</p>
+                </div>
+              </div>
             </section>
 
             <section className="space-y-3">
@@ -1212,7 +1377,7 @@ export default function App() {
                 </div>
                 <div className="flex gap-4">
                   <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 font-bold text-xs">3</div>
-                  <p><strong className="text-zinc-200">Only Matches:</strong> Enable this to only analyze spots where both A and B were heard by the <em className="italic">same reporter</em> in the <em className="italic">same time slot</em>. This is the most accurate way to compare relative gain.</p>
+                  <p><strong className="text-zinc-200">Only Matches:</strong> Analyzes only paired spots where both A and B share the same peer in the same time slot. In <strong>TX mode</strong>, this means both were heard by the same reporter. In <strong>RX mode</strong>, both heard the same transmitter. This gives the truest head-to-head comparison.</p>
                 </div>
               </div>
             </section>
@@ -1221,7 +1386,13 @@ export default function App() {
               <h3 className="text-white font-bold uppercase tracking-wider text-xs">Core Analytics</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
-                  <h4 className="text-zinc-200 font-bold mb-2">Radiation Pattern</h4>
+                  <h4 className="text-zinc-200 font-bold mb-2">Delta Analysis</h4>
+                  <p className="text-xs">
+                    Uses matched spots to calculate the <strong>Average System Advantage</strong> and lists individual spot <strong>Delta</strong> values in the table, giving precision to your head-to-head comparisons.
+                  </p>
+                </div>
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Live Signal Reach & Reception</h4>
                   <p className="text-xs">
                     Visualizes gain per azimuth in 10° bins. Use the <strong className="text-zinc-300">Beamwidth</strong> slider to adjust the smoothing sensitivity (averaging range) for each direction.
                   </p>
@@ -1241,7 +1412,7 @@ export default function App() {
                 <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
                   <h4 className="text-zinc-200 font-bold mb-2">SNR Normalization</h4>
                   <p className="text-xs">
-                    Normalized as <code className="text-orange-500">SNR - Power</code>. This prevents power differences from skewing the results.
+                    In TX mode: <code className="text-orange-500">SNR - TX Power</code>. In RX mode: <code className="text-cyan-500">SNR - RX Power</code>. This prevents power differences from skewing the results.
                   </p>
                 </div>
               </div>
