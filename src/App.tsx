@@ -15,7 +15,7 @@ import {
   Settings, Activity, Map as MapIcon, Radio, 
   ChevronRight, RefreshCw, AlertCircle, Info,
   Compass, Table as TableIcon, CheckCircle2,
-  Menu, X, Mail, Coffee
+  Menu, X, Mail, Coffee, Download
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { WSPRSpot, ProcessedData } from './types';
@@ -69,7 +69,7 @@ function getBearing(lat1: number, lon1: number, lat2: number, lon2: number) {
 }
 
 // --- Constants ---
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v1.4.0';
 
 const BANDS = [
   { label: '160m', value: '1' },
@@ -499,6 +499,56 @@ export default function App() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // --- Export to CSV ---
+  const exportToCSV = () => {
+    if (!processed || processed.spots.length === 0) return;
+
+    const headers = [
+      'Time (UTC)',
+      'TX',
+      'Reporter',
+      'Distance (km)',
+      'SNR (dB)',
+      'Power (dBm)',
+      'SNR Normalized (dB)',
+      'Is Match',
+      'Delta (dB)',
+      callB ? `Reference SNR (${callB})` : ''
+    ].filter(Boolean).join(',');
+
+    const rows = processed.spots.map(s => {
+      let deltaStr = '';
+      if (s.isMatch && s.snr_norm !== undefined && s.matchedSNRNorm !== undefined) {
+        const isA = (viewMode === 'TX' ? s.transmitter : s.reporter) === callA;
+        const delta = isA ? s.snr_norm - s.matchedSNRNorm : s.matchedSNRNorm - s.snr_norm;
+        deltaStr = delta.toFixed(1);
+      }
+
+      return [
+        format(parseISO(s.datetime), 'yyyy-MM-dd HH:mm:ss'),
+        s.transmitter,
+        s.reporter,
+        s.distance?.toFixed(0) || '',
+        s.snr,
+        s.power,
+        s.snr_norm?.toFixed(1) || '',
+        s.isMatch ? 'Yes' : 'No',
+        deltaStr,
+        callB && s.matchedSNR !== undefined ? s.matchedSNR : ''
+      ].filter((_, i) => i !== 9 || callB).join(',');
+    });
+
+    const csvContent = [headers, ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `wspr_spots_${callA}${callB ? `_vs_${callB}` : ''}_${format(new Date(), 'yyyyMMdd_HHmm')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   return (
     <div className="flex h-screen h-[100dvh] overflow-hidden bg-[#0a0a0a] text-zinc-300 relative">
@@ -1199,15 +1249,25 @@ export default function App() {
               </h3>
             </div>
             
-            <div className="flex gap-4 text-[10px] uppercase tracking-wider font-semibold">
-              <span className="flex items-center gap-1 text-orange-500">
-                <div className="w-2 h-2 rounded-full bg-orange-500" /> {callA}
-              </span>
-              {callB && (
-                <span className="flex items-center gap-1 text-blue-500">
-                  <div className="w-2 h-2 rounded-full bg-blue-500" /> {callB}
+            <div className="flex items-center gap-4">
+              <div className="flex gap-4 text-[10px] uppercase tracking-wider font-semibold">
+                <span className="flex items-center gap-1 text-orange-500">
+                  <div className="w-2 h-2 rounded-full bg-orange-500" /> {callA}
                 </span>
-              )}
+                {callB && (
+                  <span className="flex items-center gap-1 text-blue-500">
+                    <div className="w-2 h-2 rounded-full bg-blue-500" /> {callB}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={exportToCSV}
+                className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-md text-xs font-semibold transition-colors border border-white/5"
+                title="Export to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export
+              </button>
             </div>
           </div>
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
@@ -1413,6 +1473,12 @@ export default function App() {
                   <h4 className="text-zinc-200 font-bold mb-2">SNR Normalization</h4>
                   <p className="text-xs">
                     In TX mode: <code className="text-orange-500">SNR - TX Power</code>. In RX mode: <code className="text-cyan-500">SNR - RX Power</code>. This prevents power differences from skewing the results.
+                  </p>
+                </div>
+                <div className="p-4 bg-zinc-900/50 rounded-xl border border-white/5">
+                  <h4 className="text-zinc-200 font-bold mb-2">Data Export</h4>
+                  <p className="text-xs">
+                    Click the <strong>Export</strong> button above the spots table to download the current view's data as a CSV file, including calculated <strong className="text-orange-500">Delta</strong> values.
                   </p>
                 </div>
               </div>
