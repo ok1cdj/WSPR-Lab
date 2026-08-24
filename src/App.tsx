@@ -442,11 +442,24 @@ export default function App() {
         const lossA = Math.abs(regressionA.m * 1000).toFixed(1);
         const lossB = Math.abs(regressionB.m * 1000).toFixed(1);
 
-        if (regressionA.m > regressionB.m || dropA < dropB) {
-          propagationNote = `[${lossA} vs ${lossB} dB/1000km] Antenna ${callA} favors DX (Low-angle)`;
+        // The antenna with the flatter slope (loses less signal over distance) favors DX.
+        // The regression slope is the primary, symmetric measure; the local->DX drop is only
+        // a tiebreaker for near-equal slopes, and only when every zone has real data (so the
+        // -50 empty-zone sentinel above can never decide the verdict).
+        const slopeEps = 0.00005; // ~0.05 dB/1000km
+        let aFavorsDX: boolean;
+        if (Math.abs(regressionA.m - regressionB.m) > slopeEps) {
+          aFavorsDX = regressionA.m > regressionB.m;
+        } else if (dxA.length > 0 && dxB.length > 0 && localA.length > 0 && localB.length > 0) {
+          aFavorsDX = dropA < dropB;
         } else {
-          propagationNote = `[${lossB} vs ${lossA} dB/1000km] Antenna ${callB} favors DX (Low-angle)`;
+          aFavorsDX = regressionA.m >= regressionB.m;
         }
+
+        const [winnerLoss, loserLoss, winnerCall] = aFavorsDX
+          ? [lossA, lossB, callA]
+          : [lossB, lossA, callB];
+        propagationNote = `[${winnerLoss} vs ${loserLoss} dB/1000km] Antenna ${winnerCall} favors DX (Low-angle)`;
       }
     }
 
