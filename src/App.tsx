@@ -71,6 +71,9 @@ function getBearing(lat1: number, lon1: number, lat2: number, lon2: number) {
 // --- Constants ---
 const APP_VERSION = 'v1.4.0';
 
+// Time-series bucket size (10 minutes) used for grouping spots and brush filtering.
+const TIME_BUCKET_MS = 10 * 60 * 1000;
+
 const BANDS = [
   { label: '160m', value: '1' },
   { label: '80m', value: '3' },
@@ -220,26 +223,28 @@ export default function App() {
   // 3. Time Series Data (source for Brush AND used in chart)
   const timeSeriesData = useMemo(() => {
     if (baseData.length === 0) return [];
-    const timeGroups: Record<string, { time: string, snrA: number[], snrB: number[] }> = {};
+    // Bucket by absolute timestamp (not clock time) so spots at the same HH:mm on
+    // different days stay separate and the series stays chronological across midnight.
+    const timeGroups: Record<number, { ts: number, time: string, snrA: number[], snrB: number[] }> = {};
+    const upperCallA = callA.toUpperCase();
+    const upperCallB = callB.toUpperCase();
     baseData.forEach(s => {
-      const date = parseISO(s.datetime);
-      const slot = format(new Date(Math.floor(date.getTime() / (10 * 60 * 1000)) * (10 * 60 * 1000)), 'HH:mm');
-      if (!timeGroups[slot]) timeGroups[slot] = { time: slot, snrA: [], snrB: [] };
-      const upperCallA = callA.toUpperCase();
-      const upperCallB = callB.toUpperCase();
+      const ts = Math.floor(parseISO(s.datetime).getTime() / TIME_BUCKET_MS) * TIME_BUCKET_MS;
+      if (!timeGroups[ts]) timeGroups[ts] = { ts, time: format(new Date(ts), 'HH:mm'), snrA: [], snrB: [] };
       const target = viewMode === 'TX' ? s.transmitter : s.reporter;
-      if (target.toUpperCase() === upperCallA) timeGroups[slot].snrA.push(s.snr_norm || 0);
-      else if (target.toUpperCase() === upperCallB) timeGroups[slot].snrB.push(s.snr_norm || 0);
+      if (target.toUpperCase() === upperCallA) timeGroups[ts].snrA.push(s.snr_norm || 0);
+      else if (target.toUpperCase() === upperCallB) timeGroups[ts].snrB.push(s.snr_norm || 0);
     });
 
     return Object.values(timeGroups)
       .map(g => ({
+        ts: g.ts,
         time: g.time,
         [callA]: g.snrA.length > 0 ? Number((g.snrA.reduce((a, b) => a + b, 0) / g.snrA.length).toFixed(1)) : null,
         [callB]: g.snrB.length > 0 ? Number((g.snrB.reduce((a, b) => a + b, 0) / g.snrB.length).toFixed(1)) : null,
       }))
-      .sort((a, b) => a.time.localeCompare(b.time));
-  }, [baseData, callA, callB]);
+      .sort((a, b) => a.ts - b.ts);
+  }, [baseData, callA, callB, viewMode]);
 
   // 4. Final aggregation with Brush and Sort
   const processed = useMemo((): ProcessedData => {
@@ -267,13 +272,13 @@ export default function App() {
     // Filter by Brush
     let filteredSpots = baseData;
     if (brushRange.startIndex !== undefined && brushRange.endIndex !== undefined && timeSeriesData.length > 0) {
-      const startTime = timeSeriesData[brushRange.startIndex]?.time;
-      const endTime = timeSeriesData[brushRange.endIndex]?.time;
-      
-      if (startTime && endTime) {
+      const startTs = timeSeriesData[brushRange.startIndex]?.ts;
+      const endTs = timeSeriesData[brushRange.endIndex]?.ts;
+
+      if (startTs !== undefined && endTs !== undefined) {
         filteredSpots = baseData.filter(s => {
-          const t = format(parseISO(s.datetime), 'HH:mm');
-          return t >= startTime && t <= endTime;
+          const ts = Math.floor(parseISO(s.datetime).getTime() / TIME_BUCKET_MS) * TIME_BUCKET_MS;
+          return ts >= startTs && ts <= endTs;
         });
       }
     }

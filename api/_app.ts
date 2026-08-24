@@ -8,25 +8,40 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
+// WSPR callsigns are alphanumeric with optional '/' (portable/compound suffixes).
+// Reject anything else so user input can't be injected into the ClickHouse query.
+function sanitizeCall(call: unknown): string | null {
+  if (typeof call !== "string") return null;
+  const c = call.trim().toUpperCase();
+  return /^[A-Z0-9/]{1,20}$/.test(c) ? c : null;
+}
+
 // API Route for WSPR query
 app.post("/api/wspr", async (req, res) => {
   const { call1, call2, band, hours, viewMode = 'TX' } = req.body;
 
   // Construct SQL query for wspr.live
   const targetSign = viewMode === 'RX' ? 'rx_sign' : 'tx_sign';
-  const transmitters = [call1, call2].filter(Boolean).map(c => `'${c}'`).join(',');
-  
-  // Ensure band is treated as a number in the query
+
+  // Validate/coerce every value that is interpolated into the SQL string.
+  const calls = [call1, call2].map(sanitizeCall).filter((c): c is string => c !== null);
   const bandNum = parseInt(band);
-  
+  const hoursNum = Math.min(Math.max(parseInt(hours, 10) || 0, 1), 24);
+
+  if (calls.length === 0 || isNaN(bandNum)) {
+    return res.status(400).json({ error: "Invalid parameters" });
+  }
+
+  const transmitters = calls.map(c => `'${c}'`).join(',');
+
   const sql = `
-    SELECT 
+    SELECT
         time as datetime, tx_sign as transmitter, rx_sign as reporter, snr, power,
         tx_lat, tx_lon, rx_lat, rx_lon, azimuth
     FROM wspr.rx
     WHERE ${targetSign} IN (${transmitters})
       AND band = ${bandNum}
-      AND time > now() - INTERVAL ${hours} HOUR
+      AND time > now() - INTERVAL ${hoursNum} HOUR
     ORDER BY time DESC
     LIMIT 5000
     FORMAT JSON
@@ -63,8 +78,9 @@ app.post("/api/wspr", async (req, res) => {
 app.post("/api/nearby", async (req, res) => {
   const { callA, band, viewMode = 'TX' } = req.body;
   const bandNum = parseInt(band);
+  const safeCallA = sanitizeCall(callA);
 
-  if (!callA || isNaN(bandNum)) {
+  if (!safeCallA || isNaN(bandNum)) {
     return res.status(400).json({ error: "Invalid parameters" });
   }
 
@@ -77,7 +93,7 @@ app.post("/api/nearby", async (req, res) => {
     const locSql = `
       SELECT ${targetLat} as lat, ${targetLon} as lon 
       FROM wspr.rx 
-      WHERE ${targetSign} = '${callA}' 
+      WHERE ${targetSign} = '${safeCallA}'
         AND time > now() - INTERVAL 7 DAY
         AND ${targetLat} != 0 
         AND ${targetLon} != 0
@@ -120,7 +136,7 @@ app.post("/api/nearby", async (req, res) => {
       FROM wspr.rx
       WHERE band = ${bandNum}
         AND time > now() - INTERVAL 4 HOUR
-        AND ${targetSign} != '${callA}'
+        AND ${targetSign} != '${safeCallA}'
         AND ${targetLat} != 0
         AND ${targetLon} != 0
       GROUP BY ${targetSign}
